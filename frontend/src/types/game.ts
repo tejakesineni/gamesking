@@ -39,3 +39,27 @@ export type GameOption =
   | "Snakes and Ladders"
   | "Tambola"
   | "Tic Tac Toe";
+
+export type SnakesAndLaddersMoveKind =
+  | "normal"
+  | "snake"
+  | "ladder"
+  | "blocked";
+
+export type SnakesAndLaddersMove = {
+  playerName: string;
+  roll: number;
+  from: number;
+  to: number;
+  kind: SnakesAndLaddersMoveKind;
+};
+
+export type SnakesAndLaddersState = {
+  roomCode: string;
+  playerOrder: string[];
+  positions: Record<string, number>;
+  currentTurnIndex: number;
+  status: "running" | "finished";
+  winner: string | null;
+  lastMove: SnakesAndLaddersMove | null;
+};

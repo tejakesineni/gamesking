@@ -11,11 +11,28 @@
   margin: 0 auto;
 }
 
+.livePage {
+  grid-template-columns: minmax(0, 1fr);
+  width: min(1320px, calc(100% - 3rem));
+  min-height: 100vh;
+  align-content: center;
+  align-items: center;
+  overflow: hidden;
+}
+
 .logoCorner {
   position: fixed;
   top: 1rem;
   right: 1rem;
   z-index: 20;
+}
+
+.liveSection {
+  width: 100%;
+  min-height: 100vh;
+  padding: 1.25rem 0;
+  justify-content: center;
+  align-items: center;
 }
 
 .logoImage {
@@ -57,6 +74,12 @@
   gap: 1rem;
   width: 100%;
   max-width: 640px;
+}
+
+.liveForm {
+  width: min(1180px, 100%);
+  max-width: min(1180px, 100%);
+  padding: 1.5rem 1.75rem;
 }
 
 .panelHeader {

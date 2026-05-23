@@ -10,6 +10,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import gamesKingLogo from "../../assets/games-king-logo.png";
 import { connectWaitingRoomSocket } from "./GamePage.service";
 import { fetchWaitingRoom } from "./GamePage.service";
+import SnakesAndLaddersGame from "./SnakesAndLaddersGame";
 import type {
   RoomStatus,
   RoomUser,
@@ -100,12 +101,18 @@ export default function GamePage() {
   const [roomError, setRoomError] = useState("");
   const [isStartingGame, setIsStartingGame] = useState(false);
   const [liveStartedRoomCode, setLiveStartedRoomCode] = useState("");
+  const [onlinePlayerNames, setOnlinePlayerNames] = useState<string[]>([]);
+  const [liveSocket, setLiveSocket] = useState<ReturnType<
+    typeof connectWaitingRoomSocket
+  > | null>(null);
+  const liveSocketTimeoutRef = useRef<number | null>(null);
   const isMountedRef = useRef(true);
   const socketRef = useRef<ReturnType<typeof connectWaitingRoomSocket> | null>(
     null,
   );
   const joinedPlayerName = (searchParams.get("playerName") ?? "").trim();
   const hostName = (searchParams.get("hostName") ?? "").trim();
+  const localPlayerName = joinedPlayerName || hostName;
 
   const socketStatus = !roomCode
     ? "idle"
@@ -177,8 +184,15 @@ export default function GamePage() {
       return;
     }
 
-    const socket = connectWaitingRoomSocket(roomCode, joinedPlayerName);
+    const socket = connectWaitingRoomSocket(roomCode, localPlayerName);
     socketRef.current = socket;
+    if (liveSocketTimeoutRef.current !== null) {
+      window.clearTimeout(liveSocketTimeoutRef.current);
+    }
+    liveSocketTimeoutRef.current = window.setTimeout(() => {
+      setLiveSocket(socket);
+      liveSocketTimeoutRef.current = null;
+    }, 0);
 
     socket.on("connect", () => {
       setIsSocketConnected(true);
@@ -225,6 +239,16 @@ export default function GamePage() {
       },
     );
     socket.on(
+      "room:presence",
+      (payload: { roomCode: string; connectedPlayerNames: string[] }) => {
+        if (payload.roomCode !== roomCode) {
+          return;
+        }
+
+        setOnlinePlayerNames(payload.connectedPlayerNames);
+      },
+    );
+    socket.on(
       "room:started",
       (payload: { roomCode: string; status: RoomStatus }) => {
         if (payload.roomCode !== roomCode) {
@@ -262,9 +286,15 @@ export default function GamePage() {
     );
 
     return () => {
+      if (liveSocketTimeoutRef.current !== null) {
+        window.clearTimeout(liveSocketTimeoutRef.current);
+        liveSocketTimeoutRef.current = null;
+      }
+
       socket.off("connect");
       socket.off("disconnect");
       socket.off("room:user-joined");
+      socket.off("room:presence");
       socket.off("room:started");
       socket.off("room:start-error");
       socket.disconnect();
@@ -272,8 +302,14 @@ export default function GamePage() {
       if (socketRef.current === socket) {
         socketRef.current = null;
       }
+
+      window.setTimeout(() => {
+        setLiveSocket((currentSocket) =>
+          currentSocket === socket ? null : currentSocket,
+        );
+      }, 0);
     };
-  }, [joinedPlayerName, roomCode, syncRoomDetails]);
+  }, [joinedPlayerName, localPlayerName, roomCode, syncRoomDetails]);
 
   async function onStartGame() {
     if (!roomCode || !hostName || !isHost) {
@@ -341,12 +377,14 @@ export default function GamePage() {
 
     if (gameKey === "snakes and ladders") {
       return (
-        <section className={styles.liveGameSurface}>
-          <h2>Snakes and Ladders Live</h2>
-          <p>
-            Climb ladders, avoid snakes, and be the first to reach the finish.
-          </p>
-        </section>
+        <SnakesAndLaddersGame
+          roomCode={roomCode}
+          socket={liveSocket}
+          players={roomDetails?.players ?? []}
+          localPlayerName={localPlayerName}
+          isSocketConnected={isSocketConnected}
+          onlinePlayerNames={onlinePlayerNames}
+        />
       );
     }
 
@@ -369,7 +407,7 @@ export default function GamePage() {
 
   const renderLiveView = () => {
     return (
-      <main className={styles.page}>
+      <main className={`${styles.page} ${styles.livePage}`}>
         <div className={styles.logoCorner}>
           <Link to="/">
             {!logoMissing ? (
@@ -385,43 +423,10 @@ export default function GamePage() {
           </Link>
         </div>
 
-        <section className={styles.section}>
-          <div className={styles.form}>
-            <div className={styles.panelHeader}>
-              <span>Game in progress</span>
-              <p>
-                Room {roomCode} is now live. All joined players are on the same
-                game view.
-              </p>
-            </div>
-
+        <section className={`${styles.section} ${styles.liveSection}`}>
+          <div className={`${styles.form} ${styles.liveForm}`}>
             {renderGameSurface()}
           </div>
-        </section>
-
-        <section className={styles.playersSection}>
-          <div className={styles.playersHeader}>
-            <span>{activeGame || "Game"}</span>
-            <p>
-              {playerCount
-                ? `${playerCount} player${playerCount === 1 ? "" : "s"} in room`
-                : "No players found"}
-            </p>
-          </div>
-
-          <ul className={styles.playersList}>
-            {(roomDetails?.players ?? []).map((player, index) => (
-              <li
-                key={`${player.playerName}-${player.joinedAt}`}
-                className={styles.playerItem}
-              >
-                <span>{player.playerName}</span>
-                {index === 0 ? (
-                  <span className={styles.hostPill}>Host</span>
-                ) : null}
-              </li>
-            ))}
-          </ul>
         </section>
 
         <div className={styles.socketStatus} data-status={socketStatus}>
