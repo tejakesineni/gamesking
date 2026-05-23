@@ -47,7 +47,10 @@ services:
       - "8080:80"
 
   adminer:
-    image: adminer:5-standalone
+    build:
+      context: ./adminer
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
     depends_on:
       postgres:
         condition: service_healthy

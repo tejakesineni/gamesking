@@ -1,25 +1,41 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import type { BingoColumn, Room, RoomStatus } from "../types/game";
+import type { BingoColumn, Room, RoomStatus } from "../../types/game";
+import { fetchAdminRooms } from "./AdminView.service";
+import { buildBingoBoard } from "../../utils/bingoBoard";
 
-type AdminViewProps = {
-  rooms: Room[];
-  liveRooms: number;
-  seatsOpen: number;
-  isLoading: boolean;
-  errorMessage: string;
-  statusCopy: Record<RoomStatus, string>;
-  boardPreview: BingoColumn[];
+const statusCopy: Record<RoomStatus, string> = {
+  waiting: "Lobby open",
+  live: "Numbers rolling",
+  finished: "Round closed",
 };
 
-export default function AdminView({
-  rooms,
-  liveRooms,
-  seatsOpen,
-  isLoading,
-  errorMessage,
-  statusCopy,
-  boardPreview,
-}: AdminViewProps) {
+export default function AdminView() {
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [boardPreview] = useState<BingoColumn[]>(() => buildBingoBoard());
+
+  const liveRooms = rooms.filter((room) => room.status === "live").length;
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const roomList = await fetchAdminRooms();
+        setRooms(roomList);
+        setErrorMessage("");
+      } catch (error) {
+        setErrorMessage(
+          error instanceof Error
+            ? `${error.message} Start the backend or Docker stack and retry.`
+            : "Unable to load bingo rooms right now.",
+        );
+      } finally {
+        setIsLoading(false);
+      }
+    })();
+  }, []);
+
   return (
     <main className="app-shell">
       <section className="hero-panel compact-hero">
@@ -62,8 +78,8 @@ export default function AdminView({
             <span>Live games</span>
           </article>
           <article>
-            <strong>{seatsOpen}</strong>
-            <span>Open seats</span>
+            <strong>{rooms.length - liveRooms}</strong>
+            <span>Waiting rooms</span>
           </article>
         </div>
       </section>
@@ -122,10 +138,10 @@ export default function AdminView({
             ) : null}
 
             {rooms.map((room) => (
-              <article key={room.id} className="room-card">
+              <article key={room.roomCode} className="room-card">
                 <div>
                   <div className="room-card-top">
-                    <h2>{room.name}</h2>
+                    <h2>{room.game}</h2>
                     <span className={`status-pill status-${room.status}`}>
                       {statusCopy[room.status]}
                     </span>
@@ -133,13 +149,6 @@ export default function AdminView({
                   <p>
                     Hosted by {room.hostName} · Code {room.roomCode}
                   </p>
-                </div>
-
-                <div className="room-card-bottom">
-                  <strong>
-                    {room.playersJoined}/{room.maxPlayers}
-                  </strong>
-                  <span>players in the room</span>
                 </div>
               </article>
             ))}

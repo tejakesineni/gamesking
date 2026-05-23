@@ -7,6 +7,10 @@ services:
       POSTGRES_USER: bingo
       POSTGRES_PASSWORD: bingo
       POSTGRES_DB: bingo
+    networks:
+      default:
+        aliases:
+          - db
     ports:
       - "5433:5432"
     volumes:
@@ -59,7 +63,10 @@ services:
       then npm install; fi && npm run dev -- --host 0.0.0.0 --port 5173"
 
   adminer:
-    image: adminer:5-standalone
+    build:
+      context: ./adminer
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
     depends_on:
       postgres:
         condition: service_healthy

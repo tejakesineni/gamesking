@@ -1,13 +1,10 @@
 export type RoomStatus = "waiting" | "live" | "finished";
 
 export type Room = {
-  id: string;
-  name: string;
   hostName: string;
+  game: string;
   roomCode: string;
   status: RoomStatus;
-  maxPlayers: number;
-  playersJoined: number;
   createdAt: string;
 };
 
@@ -17,12 +14,28 @@ export type BingoColumn = {
 };
 
 export type NewGameFormState = {
-  name: string;
   hostName: string;
-  maxPlayers: number;
 };
 
 export type JoinGameFormState = {
   roomCode: string;
   playerName: string;
 };
+
+export type RoomUser = {
+  id: string;
+  roomCode: string;
+  playerName: string;
+  joinedAt: string;
+};
+
+export type WaitingRoomDetails = Room & {
+  players: RoomUser[];
+};
+
+export type GameOption =
+  | "Bingo"
+  | "Ludo"
+  | "Snakes and Ladders"
+  | "Tambola"
+  | "Tic Tac Toe";

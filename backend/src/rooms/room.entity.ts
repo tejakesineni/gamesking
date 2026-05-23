@@ -1,9 +1,4 @@
-import {
-  Column,
-  CreateDateColumn,
-  Entity,
-  PrimaryGeneratedColumn,
-} from 'typeorm';
+import { Column, CreateDateColumn, Entity, PrimaryColumn } from 'typeorm';
 
 export enum RoomStatus {
   WAITING = 'waiting',
@@ -13,17 +8,14 @@ export enum RoomStatus {
 
 @Entity({ name: 'rooms' })
 export class Room {
-  @PrimaryGeneratedColumn('uuid')
-  id!: string;
+  @PrimaryColumn({ type: 'varchar', length: 8 })
+  roomCode!: string;
 
-  @Column({ length: 80 })
-  name!: string;
-
-  @Column({ length: 40 })
+  @Column({ type: 'varchar', length: 40 })
   hostName!: string;
 
-  @Column({ unique: true, length: 8 })
-  roomCode!: string;
+  @Column({ type: 'varchar', length: 40, default: 'Bingo' })
+  game!: string;
 
   @Column({
     type: 'enum',
@@ -32,12 +24,6 @@ export class Room {
   })
   status!: RoomStatus;
 
-  @Column({ type: 'int', default: 6 })
-  maxPlayers!: number;
-
-  @Column({ type: 'int', default: 1 })
-  playersJoined!: number;
-
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;
 }
