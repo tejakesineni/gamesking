@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  NotFoundException,
+  OnModuleInit,
+  forwardRef,
+} from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { CreateRoomDto } from './dto/create-room.dto';
@@ -17,6 +23,7 @@ export class RoomsService implements OnModuleInit {
     private readonly roomUsersRepository: Repository<RoomUser>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
+    @Inject(forwardRef(() => RoomsGateway))
     private readonly roomsGateway: RoomsGateway,
   ) {}
 

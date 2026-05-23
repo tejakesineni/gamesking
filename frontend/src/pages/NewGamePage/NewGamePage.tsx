@@ -36,7 +36,7 @@ export default function NewGamePage() {
       });
 
       navigate(
-        `/waiting-room/${encodeURIComponent(room.roomCode)}?hostName=${encodeURIComponent(
+        `/game/${encodeURIComponent(room.roomCode)}?hostName=${encodeURIComponent(
           formState.hostName.trim(),
         )}`,
       );

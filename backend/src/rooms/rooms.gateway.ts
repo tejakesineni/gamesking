@@ -1,10 +1,15 @@
 import {
+  ConnectedSocket,
+  MessageBody,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  SubscribeMessage,
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
+import { forwardRef, Inject, Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
+import { RoomsService } from './rooms.service';
 
 type RoomCreatedPayload = {
   roomCode: string;
@@ -24,12 +29,23 @@ type RoomStartedPayload = {
   status: string;
 };
 
+type RoomStartPayload = {
+  hostName?: string;
+};
+
 @WebSocketGateway({
   cors: {
     origin: true,
   },
 })
 export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
+  private readonly logger = new Logger(RoomsGateway.name);
+
+  constructor(
+    @Inject(forwardRef(() => RoomsService))
+    private readonly roomsService: RoomsService,
+  ) {}
+
   @WebSocketServer()
   private server?: Server;
 
@@ -42,7 +58,7 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    client.join(roomCode);
+    void client.join(roomCode);
     client.emit('room:connected', { roomCode });
     client.to(roomCode).emit('room:user-connected', { roomCode });
 
@@ -60,6 +76,42 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     if (roomCode) {
       client.to(roomCode).emit('room:user-disconnected', { roomCode });
+    }
+  }
+
+  @SubscribeMessage('room:start')
+  async handleRoomStart(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: RoomStartPayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const hostName =
+      typeof payload?.hostName === 'string' ? payload.hostName.trim() : '';
+
+    if (!roomCode) {
+      return;
+    }
+
+    if (!hostName) {
+      client.emit('room:start-error', {
+        roomCode,
+        message: 'Host name is required to start the room.',
+      });
+      return;
+    }
+
+    try {
+      await this.roomsService.startRoom(roomCode, { hostName });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unable to start this room.';
+
+      client.emit('room:start-error', {
+        roomCode,
+        message,
+      });
+
+      this.logger.warn(`Unable to start room ${roomCode}: ${message}`);
     }
   }
 

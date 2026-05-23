@@ -39,7 +39,7 @@ export default function JoinGamePage() {
       });
 
       navigate(
-        `/waiting-room/${encodeURIComponent(joinedUser.roomCode)}?playerName=${encodeURIComponent(joinedUser.playerName)}`,
+        `/game/${encodeURIComponent(joinedUser.roomCode)}?playerName=${encodeURIComponent(joinedUser.playerName)}`,
       );
     } catch (error) {
       setErrorMessage(
