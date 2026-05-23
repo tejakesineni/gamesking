@@ -1,0 +1,23 @@
+{
+    "name": "online-bingo-monorepo",
+    "private": true,
+    "scripts": {
+        "dev": "concurrently -n backend,frontend \"npm --prefix backend run start:dev\" \"npm --prefix frontend run dev\"",
+        "dev:hot": "concurrently -n backend,frontend \"npm run backend:dev:hot\" \"npm run frontend:dev:hot\"",
+        "docker:dev:up": "docker compose -f docker-compose.dev.yml up --build -d",
+        "docker:dev:logs": "docker compose -f docker-compose.dev.yml logs -f",
+        "docker:dev:ps": "docker compose -f docker-compose.dev.yml ps",
+        "docker:dev:down": "docker compose -f docker-compose.dev.yml down -v",
+        "backend:dev": "npm --prefix backend run start:dev",
+        "backend:dev:hot": "PORT=3001 npm --prefix backend run start:dev",
+        "frontend:dev": "npm --prefix frontend run dev",
+        "frontend:dev:hot": "VITE_API_BASE_URL=http://localhost:3001/api npm --prefix frontend run dev -- --host",
+        "backend:build": "npm --prefix backend run build",
+        "frontend:build": "npm --prefix frontend run build",
+        "docker:up": "docker compose up --build",
+        "docker:down": "docker compose down -v"
+    },
+    "devDependencies": {
+        "concurrently": "^9.2.1"
+    }
+}

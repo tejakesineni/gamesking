@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: bingo
+      POSTGRES_PASSWORD: bingo
+      POSTGRES_DB: bingo
+    networks:
+      default:
+        aliases:
+          - db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bingo -d bingo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 3000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: bingo
+      DB_PASSWORD: bingo
+      DB_NAME: bingo
+      FRONTEND_ORIGIN: http://localhost:8080,http://localhost:5173
+    ports:
+      - "3000:3000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: http://localhost:3000/api
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+  adminer:
+    image: adminer:5-standalone
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+
+volumes:
+  postgres-data:

@@ -1,0 +1,72 @@
+name: personal-dev
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: bingo
+      POSTGRES_PASSWORD: bingo
+      POSTGRES_DB: bingo
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bingo -d bingo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: node:22-alpine
+    working_dir: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 3000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: bingo
+      DB_PASSWORD: bingo
+      DB_NAME: bingo
+      FRONTEND_ORIGIN: http://localhost:5173
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./backend:/app
+      - backend-node-modules:/app/node_modules
+    command: >
+      sh -c "if [ ! -d node_modules ] || [ -z \"$(ls -A node_modules 2>/dev/null)\" ];
+      then npm install; fi && npm run start:dev"
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    depends_on:
+      - backend
+    environment:
+      VITE_API_BASE_URL: http://localhost:3001/api
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+    command: >
+      sh -c "if [ ! -d node_modules ] || [ -z \"$(ls -A node_modules 2>/dev/null)\" ];
+      then npm install; fi && npm run dev -- --host 0.0.0.0 --port 5173"
+
+  adminer:
+    image: adminer:5-standalone
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8082:8080"
+
+volumes:
+  postgres-dev-data:
+  backend-node-modules:
+  frontend-node-modules:

@@ -1,0 +1,68 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap");
+
+:root {
+  font-family: "Space Grotesk", sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #5a4632;
+  background:
+    radial-gradient(circle at top, rgba(255, 231, 169, 0.9), transparent 35%),
+    linear-gradient(180deg, #fff7df 0%, #ffe7cf 45%, #ffd7bd 100%);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  --ink-strong: #3d240f;
+  --ink-soft: #7b6248;
+  --accent-strong: #b44f1f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+#root {
+  min-height: 100vh;
+  width: min(1180px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 2rem 0 3rem;
+}
+
+h1,
+h2 {
+  font-family: "Fraunces", serif;
+  color: var(--ink-strong);
+}
+
+h1 {
+  margin: 0.7rem 0 1rem;
+  font-size: clamp(2.6rem, 7vw, 4.9rem);
+  line-height: 0.95;
+}
+
+h2,
+p {
+  margin: 0;
+}
+
+p,
+span,
+label,
+input,
+button {
+  color: var(--ink-soft);
+}
+
+button,
+input {
+  font-family: inherit;
+}
+
+a {
+  color: inherit;
+}
