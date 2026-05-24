@@ -34,7 +34,7 @@ const CENTER_POINT: GridPoint = { row: 7, col: 7 };
 
 const BOARD_SIZE = 15;
 const TOKEN_COUNT = 4;
-const PLAYER_COLORS = ["#16a34a", "#facc15", "#38bdf8", "#ef4444"];
+const PLAYER_COLORS = ["#f97316", "#0ea5e9", "#8b5cf6", "#16a34a"];
 const LUDO_BOARD_TRACK_LENGTH = 52;
 const LUDO_HOME_ENTRY_PROGRESS = 51;
 const LUDO_HOME_LANE_LENGTH = 5;
@@ -324,15 +324,6 @@ function getBoardCellClass(row: number, col: number) {
   }
 
   return styles.boardCell;
-}
-
-function getTrackIndexForCell(row: number, col: number) {
-  return TRACK_CELLS.findIndex((cell) => cell.row === row && cell.col === col);
-}
-
-function getLaneIndexForCell(row: number, col: number) {
-  const laneCells = PLAYER_LANES.flat();
-  return laneCells.findIndex((cell) => cell.row === row && cell.col === col);
 }
 
 function moveKindCopy(kind: NonNullable<LudoState["lastMove"]>["kind"]) {
@@ -751,8 +742,6 @@ export default function LudoGame({
             perspectiveRotationSteps,
           )
         : undefined;
-      const trackIndex = getTrackIndexForCell(row, col);
-      const laneIndex = getLaneIndexForCell(row, col);
 
       return (
         <div
@@ -763,16 +752,7 @@ export default function LudoGame({
             gridRowStart: renderedPoint.row + 1,
             gridColumnStart: renderedPoint.col + 1,
           }}
-        >
-          {trackIndex >= 0 ? (
-            <span className={styles.trackIndexLabel}>{trackIndex + 1}</span>
-          ) : null}
-          {laneIndex >= 0 ? (
-            <span className={styles.laneIndexLabel}>
-              {((laneIndex % 5) + 1).toString()}
-            </span>
-          ) : null}
-        </div>
+        />
       );
     },
   );
@@ -897,7 +877,7 @@ export default function LudoGame({
           </div>
         </div>
 
-        <div className={styles.sidebar}>
+        <div className={styles.boardDiceDock}>
           <div className={styles.dicePanel}>
             <button
               type="button"
@@ -945,11 +925,9 @@ export default function LudoGame({
             <div className={styles.diceCaption}>
               {isAwaitingLocalChoice
                 ? `You rolled ${pendingChoice.roll}. Tap a coin to move.`
-                : isMyTurn
-                  ? "Your turn"
-                  : currentTurnPlayer
-                    ? `${currentTurnPlayer}'s turn`
-                    : "Waiting for game"}
+                : currentTurnPlayer
+                  ? `${currentTurnPlayer}'s turn`
+                  : "Waiting for game"}
             </div>
           </div>
 
@@ -1006,9 +984,11 @@ export default function LudoGame({
                           : "Online"
                         : "Offline"}
                     </span>
-                    <span className={styles.playerLegendMeta}>
-                      {finishedCount}/4 home
-                    </span>
+                    {finishedCount > 0 ? (
+                      <span className={styles.playerLegendMeta}>
+                        {finishedCount}/4 home
+                      </span>
+                    ) : null}
                   </li>
                 );
               })}

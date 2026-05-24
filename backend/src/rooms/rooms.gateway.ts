@@ -130,7 +130,7 @@ const LUDO_HOME_LANE_LENGTH = 5;
 const LUDO_CENTER_PROGRESS =
   LUDO_HOME_ENTRY_PROGRESS + LUDO_HOME_LANE_LENGTH + 1;
 const LUDO_MAX_PROGRESS = LUDO_CENTER_PROGRESS;
-const LUDO_SAFE_TRACK_INDEXES = new Set(LUDO_ENTRY_OFFSETS);
+const LUDO_SAFE_TRACK_INDEXES = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
 
 function getLudoBoardSlotIndex(playerCount: number, playerIndex: number) {
   if (playerCount === 2) {
@@ -596,6 +596,9 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     let roll = this.rollDice();
     let movableTokenIndexes = this.getMovableLudoTokenIndexes(
+      state,
+      playerName,
+      currentPlayerIndex,
       tokenProgress,
       roll,
     );
@@ -655,7 +658,7 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       requestedTokenIndex !== null &&
       movableTokenIndexes.includes(requestedTokenIndex)
         ? requestedTokenIndex
-        : this.chooseLudoTokenIndex(tokenProgress, roll);
+        : this.chooseLudoTokenIndex(tokenProgress, movableTokenIndexes);
 
     if (tokenIndex === -1) {
       state.lastMove = {
@@ -717,7 +720,7 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (isWinningMove) {
       state.status = 'finished';
       state.winner = playerName;
-    } else if (roll !== 6 && !tokenReachedEnd) {
+    } else if (roll !== 6 && !tokenReachedEnd && capturedPlayers.length === 0) {
       state.currentTurnIndex =
         (state.currentTurnIndex + 1) % state.playerOrder.length;
     }
@@ -726,15 +729,35 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server?.to(roomCode).emit('ludo:state', state);
   }
 
-  private getMovableLudoTokenIndexes(tokenProgress: number[], roll: number) {
+  private getMovableLudoTokenIndexes(
+    state: LudoState,
+    playerName: string,
+    playerIndex: number,
+    tokenProgress: number[],
+    roll: number,
+  ) {
     const movableIndexes: number[] = [];
 
     for (let index = 0; index < tokenProgress.length; index += 1) {
       const progress = tokenProgress[index] ?? 0;
-      const canMove =
+      const canMoveByDistance =
         progress === 0 ? roll === 6 : progress + roll <= LUDO_MAX_PROGRESS;
 
-      if (canMove) {
+      if (!canMoveByDistance) {
+        continue;
+      }
+
+      const landingProgress = progress === 0 ? 1 : progress + roll;
+      const isOwnStackBlocked = this.isLudoOwnStackBlocked(
+        state,
+        playerName,
+        playerIndex,
+        tokenProgress,
+        index,
+        landingProgress,
+      );
+
+      if (!isOwnStackBlocked) {
         movableIndexes.push(index);
       }
     }
@@ -848,18 +871,15 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     await this.ludoStateRepository.save(stateEntity);
   }
 
-  private chooseLudoTokenIndex(tokenProgress: number[], roll: number) {
+  private chooseLudoTokenIndex(
+    tokenProgress: number[],
+    movableTokenIndexes: number[],
+  ) {
     let selectedIndex = -1;
     let selectedProgress = -1;
 
-    for (let index = 0; index < tokenProgress.length; index += 1) {
+    for (const index of movableTokenIndexes) {
       const progress = tokenProgress[index] ?? 0;
-      const canMove =
-        progress === 0 ? roll === 6 : progress + roll <= LUDO_MAX_PROGRESS;
-
-      if (!canMove) {
-        continue;
-      }
 
       if (progress > selectedProgress) {
         selectedIndex = index;
@@ -868,6 +888,54 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     return selectedIndex;
+  }
+
+  private isLudoOwnStackBlocked(
+    state: LudoState,
+    playerName: string,
+    playerIndex: number,
+    tokenProgress: number[],
+    movingTokenIndex: number,
+    landingProgress: number,
+  ) {
+    if (landingProgress >= LUDO_MAX_PROGRESS) {
+      return false;
+    }
+
+    if (landingProgress > LUDO_HOME_ENTRY_PROGRESS) {
+      return tokenProgress.some(
+        (progress, tokenIndex) =>
+          tokenIndex !== movingTokenIndex && progress === landingProgress,
+      );
+    }
+
+    const landingTrackIndex = this.getLudoTrackIndex(
+      state.playerOrder.length,
+      playerIndex,
+      landingProgress,
+    );
+
+    if (LUDO_SAFE_TRACK_INDEXES.has(landingTrackIndex)) {
+      return false;
+    }
+
+    return tokenProgress.some((progress, tokenIndex) => {
+      if (
+        tokenIndex === movingTokenIndex ||
+        progress <= 0 ||
+        progress > LUDO_HOME_ENTRY_PROGRESS
+      ) {
+        return false;
+      }
+
+      const tokenTrackIndex = this.getLudoTrackIndex(
+        state.playerOrder.length,
+        playerIndex,
+        progress,
+      );
+
+      return tokenTrackIndex === landingTrackIndex;
+    });
   }
 
   private captureLudoTokens(
