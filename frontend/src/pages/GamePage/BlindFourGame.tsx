@@ -105,8 +105,7 @@ export default function BlindFourGame({
   const [gameError, setGameError] = useState("");
   const [selectedSlot, setSelectedSlot] = useState<number>(-1);
   const [draggingSlot, setDraggingSlot] = useState<number>(-1);
-  const [isDraggingDrawnCard, setIsDraggingDrawnCard] = useState(false);
-  const [isDraggingDiscardCard, setIsDraggingDiscardCard] = useState(false);
+  const [isDiscardTopSelected, setIsDiscardTopSelected] = useState(false);
   const [showLockOverlay, setShowLockOverlay] = useState(true);
   const [showSwapOverlay, setShowSwapOverlay] = useState(true);
   const [showPeekOverlay, setShowPeekOverlay] = useState(true);
@@ -206,8 +205,7 @@ export default function BlindFourGame({
       setGameError("");
       setSelectedSlot(-1);
       setDraggingSlot(-1);
-      setIsDraggingDrawnCard(false);
-      setIsDraggingDiscardCard(false);
+      setIsDiscardTopSelected(false);
       setSwapDragSource(null);
     };
 
@@ -298,20 +296,7 @@ export default function BlindFourGame({
     [];
   const canSeePendingDrawCard =
     hasPendingDraw && currentTurnPlayer === localPlayerName;
-  const canDragPendingDrawCard =
-    canSeePendingDrawCard &&
-    isMyTurn &&
-    !isSetupPhase &&
-    isSocketConnected &&
-    !isAwaitingPowerChoice;
-  const canDragDiscardTop =
-    !!gameState?.discardTop &&
-    isMyTurn &&
-    !hasPendingDraw &&
-    !isSetupPhase &&
-    isSocketConnected &&
-    !isAwaitingPowerChoice;
-  const canDropDrawnToDiscard =
+  const canUsePendingDrawCard =
     isMyTurn &&
     hasPendingDraw &&
     !isSetupPhase &&
@@ -323,6 +308,13 @@ export default function BlindFourGame({
     !hasPendingDraw &&
     !isSetupPhase &&
     !isAwaitingPowerChoice;
+  const canSelectDiscardTop =
+    isSocketConnected &&
+    isMyTurn &&
+    !hasPendingDraw &&
+    !isSetupPhase &&
+    !isAwaitingPowerChoice &&
+    !!gameState?.discardTop;
   const canKnockNow =
     isSocketConnected &&
     isMyTurn &&
@@ -767,25 +759,12 @@ export default function BlindFourGame({
             const isLocked = !!card.locked;
             const lockingCard = card.lockedByCard ?? null;
             const isSelected = isLocal && selectedSlot === index;
-            const canReorder = isLocal && isSetupPhase && !playerReady;
-            const canDropDrawnOnCard =
-              isLocal &&
-              isMyTurn &&
-              hasPendingDraw &&
-              !isSetupPhase &&
-              !isAwaitingPowerChoice;
-            const canDropDiscardOnCard =
-              isLocal &&
-              isMyTurn &&
-              !hasPendingDraw &&
-              !isSetupPhase &&
-              !!gameState?.discardTop &&
-              !isAwaitingPowerChoice;
-            const canDragSwapChoiceCard = isMySwapChoice;
-            const canDropSwapChoiceCard =
+            const isSwapSourceSelected =
               isMySwapChoice &&
               !!swapDragSource &&
-              swapDragSource.playerName !== playerName;
+              swapDragSource.playerName === playerName &&
+              swapDragSource.slotIndex === index;
+            const canReorder = isLocal && isSetupPhase && !playerReady;
             const isDragging = canReorder && draggingSlot === index;
             const isPeekTargetCardActive =
               isPeekRevealWindowActive &&
@@ -812,7 +791,9 @@ export default function BlindFourGame({
                 key={card.id}
                 type="button"
                 className={`${styles.cardButton} ${
-                  isSelected ? styles.cardButtonSelected : ""
+                  isSelected || isSwapSourceSelected
+                    ? styles.cardButtonSelected
+                    : ""
                 } ${isLocked ? styles.cardButtonLocked : ""} ${
                   canReorder ? styles.cardButtonReorder : ""
                 } ${isDragging ? styles.cardButtonDragging : ""} ${
@@ -822,7 +803,7 @@ export default function BlindFourGame({
                   cardElementRefs.current[getCardSlotKey(playerName, index)] =
                     element;
                 }}
-                draggable={canReorder || canDragSwapChoiceCard}
+                draggable={canReorder}
                 onClick={() => {
                   if (isMyPeekChoice) {
                     if (!isLocal && availablePeekTargets.includes(playerName)) {
@@ -834,6 +815,44 @@ export default function BlindFourGame({
                     return;
                   }
 
+                  if (isMySwapChoice) {
+                    if (
+                      swapDragSource &&
+                      swapDragSource.playerName === playerName &&
+                      swapDragSource.slotIndex === index
+                    ) {
+                      setSwapDragSource(null);
+                      setSelectedSlot(-1);
+                      return;
+                    }
+
+                    if (!swapDragSource) {
+                      setSwapDragSource({ playerName, slotIndex: index });
+                      if (isLocal) {
+                        setSelectedSlot(index);
+                      } else {
+                        setSelectedSlot(-1);
+                      }
+                      return;
+                    }
+
+                    if (swapDragSource.playerName === playerName) {
+                      setGameError(
+                        "Select a card from another player as the swap target.",
+                      );
+                      return;
+                    }
+
+                    emitAction("blind4:choose-swap-target", {
+                      fromPlayerName: swapDragSource.playerName,
+                      fromSlotIndex: swapDragSource.slotIndex,
+                      toPlayerName: playerName,
+                      toSlotIndex: index,
+                    });
+                    setSwapDragSource(null);
+                    setSelectedSlot(-1);
+                    return;
+                  }
                   if (isMyLockChoice) {
                     emitAction("blind4:choose-lock-target", {
                       targetPlayerName: playerName,
@@ -871,6 +890,19 @@ export default function BlindFourGame({
                     return;
                   }
 
+                  if (isDiscardTopSelected) {
+                    emitAction("blind4:take-discard", { slotIndex: index });
+                    setIsDiscardTopSelected(false);
+                    setSelectedSlot(-1);
+                    return;
+                  }
+
+                  if (canUsePendingDrawCard) {
+                    emitAction("blind4:swap-drawn", { slotIndex: index });
+                    setSelectedSlot(-1);
+                    return;
+                  }
+
                   setSelectedSlot(index);
                 }}
                 onDragStart={(event) => {
@@ -878,42 +910,10 @@ export default function BlindFourGame({
                     setDraggingSlot(index);
                     setSelectedSlot(index);
                     event.dataTransfer.effectAllowed = "move";
-                    return;
-                  }
-
-                  if (canDragSwapChoiceCard) {
-                    setSwapDragSource({
-                      playerName,
-                      slotIndex: index,
-                    });
-                    setSelectedSlot(index);
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData(
-                      "text/plain",
-                      "blind4-swap-choice",
-                    );
                   }
                 }}
                 onDragOver={(event) => {
                   if (canReorder && draggingSlot !== -1) {
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = "move";
-                    return;
-                  }
-
-                  if (canDropDrawnOnCard && isDraggingDrawnCard) {
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = "move";
-                    return;
-                  }
-
-                  if (canDropDiscardOnCard && isDraggingDiscardCard) {
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = "move";
-                    return;
-                  }
-
-                  if (canDropSwapChoiceCard) {
                     event.preventDefault();
                     event.dataTransfer.dropEffect = "move";
                   }
@@ -936,50 +936,10 @@ export default function BlindFourGame({
                     emitAction("blind4:reorder", { order });
                     setDraggingSlot(-1);
                     setSelectedSlot(-1);
-                    return;
-                  }
-
-                  if (canDropDrawnOnCard && isDraggingDrawnCard) {
-                    event.preventDefault();
-                    emitAction("blind4:swap-drawn", { slotIndex: index });
-                    setIsDraggingDrawnCard(false);
-                    setSelectedSlot(-1);
-                    return;
-                  }
-
-                  if (canDropDiscardOnCard && isDraggingDiscardCard) {
-                    event.preventDefault();
-                    emitAction("blind4:take-discard", { slotIndex: index });
-                    setIsDraggingDiscardCard(false);
-                    setSelectedSlot(-1);
-                    return;
-                  }
-
-                  if (canDropSwapChoiceCard && swapDragSource) {
-                    event.preventDefault();
-                    emitAction("blind4:choose-swap-target", {
-                      fromPlayerName: swapDragSource.playerName,
-                      fromSlotIndex: swapDragSource.slotIndex,
-                      toPlayerName: playerName,
-                      toSlotIndex: index,
-                    });
-                    setSwapDragSource(null);
-                    setSelectedSlot(-1);
                   }
                 }}
                 onDragEnd={() => {
                   setDraggingSlot(-1);
-                  setSwapDragSource(null);
-                }}
-                onMouseEnter={() => {
-                  if (isDraggingDrawnCard || isDraggingDiscardCard) {
-                    setSelectedSlot(index);
-                  }
-                }}
-                onMouseLeave={() => {
-                  if (isDraggingDrawnCard || isDraggingDiscardCard) {
-                    setSelectedSlot(-1);
-                  }
                 }}
                 aria-label={`${playerName} card ${index + 1}: ${cardTitle}${isLocked ? ", locked" : ""}${lockingCard ? `, locked by ${getRankLabel(lockingCard.rank)}${getSuitSymbol(lockingCard.suit)}` : ""}`}
               >
@@ -1184,7 +1144,7 @@ export default function BlindFourGame({
                             : isAwaitingLockChoice
                               ? `${pendingLockChoice?.playerName} is choosing a card to lock.`
                               : isAwaitingSwapChoice && isMySwapChoice
-                                ? "Drag any card and drop it on another player's card to swap."
+                                ? "Click one card as source, then click another player's card to swap."
                                 : isAwaitingSwapChoice
                                   ? `${pendingSwapChoice?.playerName} is choosing cards to swap.`
                                   : isMyShuffleChoice
@@ -1258,8 +1218,11 @@ export default function BlindFourGame({
               <button
                 type="button"
                 className={styles.pileCardButton}
-                disabled={!canDrawFromDeck}
-                onClick={() => emitAction("blind4:draw")}
+                disabled={!canDrawFromDeck || isDiscardTopSelected}
+                onClick={() => {
+                  setIsDiscardTopSelected(false);
+                  emitAction("blind4:draw");
+                }}
                 aria-label="Draw a card from deck"
               >
                 <span className={styles.cardBack}>Deck</span>
@@ -1273,44 +1236,28 @@ export default function BlindFourGame({
             <div className={styles.pileItem}>
               <div
                 className={`${styles.pileCardWrap} ${
-                  isDraggingDrawnCard && canDropDrawnToDiscard
-                    ? styles.pileDropTargetActive
-                    : ""
-                } ${canDragDiscardTop ? styles.pileCardDrawnDraggable : ""}`}
-                draggable={canDragDiscardTop}
-                onDragStart={(event) => {
-                  if (!canDragDiscardTop) {
+                  isDiscardTopSelected ? styles.pileDropTargetActive : ""
+                }`}
+                role={canSelectDiscardTop ? "button" : undefined}
+                tabIndex={canSelectDiscardTop ? 0 : undefined}
+                onClick={() => {
+                  if (!canSelectDiscardTop) {
                     return;
                   }
 
-                  setIsDraggingDiscardCard(true);
-                  event.dataTransfer.effectAllowed = "move";
-                  event.dataTransfer.setData(
-                    "text/plain",
-                    "blind4-discard-card",
-                  );
-                }}
-                onDragEnd={() => {
-                  setIsDraggingDiscardCard(false);
+                  setIsDiscardTopSelected((currentValue) => !currentValue);
                   setSelectedSlot(-1);
                 }}
-                onDragOver={(event) => {
-                  if (!isDraggingDrawnCard || !canDropDrawnToDiscard) {
+                onKeyDown={(event) => {
+                  if (!canSelectDiscardTop) {
                     return;
                   }
 
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "move";
-                }}
-                onDrop={(event) => {
-                  if (!isDraggingDrawnCard || !canDropDrawnToDiscard) {
-                    return;
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setIsDiscardTopSelected((currentValue) => !currentValue);
+                    setSelectedSlot(-1);
                   }
-
-                  event.preventDefault();
-                  emitAction("blind4:discard-drawn");
-                  setIsDraggingDrawnCard(false);
-                  setSelectedSlot(-1);
                 }}
               >
                 {gameState?.discardTop ? (
@@ -1325,25 +1272,27 @@ export default function BlindFourGame({
             {canSeePendingDrawCard && gameState?.pendingDrawCard ? (
               <div className={styles.pileItem}>
                 <div
-                  className={`${styles.pileCardWrap} ${
-                    canDragPendingDrawCard ? styles.pileCardDrawnDraggable : ""
-                  }`}
-                  draggable={canDragPendingDrawCard}
-                  onDragStart={(event) => {
-                    if (!canDragPendingDrawCard) {
+                  className={styles.pileCardWrap}
+                  role={canUsePendingDrawCard ? "button" : undefined}
+                  tabIndex={canUsePendingDrawCard ? 0 : undefined}
+                  onClick={() => {
+                    if (!canUsePendingDrawCard) {
                       return;
                     }
 
-                    setIsDraggingDrawnCard(true);
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData(
-                      "text/plain",
-                      "blind4-drawn-card",
-                    );
-                  }}
-                  onDragEnd={() => {
-                    setIsDraggingDrawnCard(false);
+                    emitAction("blind4:discard-drawn");
                     setSelectedSlot(-1);
+                  }}
+                  onKeyDown={(event) => {
+                    if (!canUsePendingDrawCard) {
+                      return;
+                    }
+
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      emitAction("blind4:discard-drawn");
+                      setSelectedSlot(-1);
+                    }
                   }}
                 >
                   {renderFaceCard(gameState.pendingDrawCard)}

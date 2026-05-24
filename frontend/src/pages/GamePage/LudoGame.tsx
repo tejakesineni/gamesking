@@ -34,13 +34,13 @@ const CENTER_POINT: GridPoint = { row: 7, col: 7 };
 
 const BOARD_SIZE = 15;
 const TOKEN_COUNT = 4;
-const PLAYER_COLORS = ["#f97316", "#0ea5e9", "#8b5cf6", "#16a34a"];
+const PLAYER_COLORS = ["#22c55e", "#facc15", "#38bdf8", "#ef4444"];
 const LUDO_BOARD_TRACK_LENGTH = 52;
 const LUDO_HOME_ENTRY_PROGRESS = 51;
 const LUDO_HOME_LANE_LENGTH = 5;
 const LUDO_CENTER_PROGRESS =
   LUDO_HOME_ENTRY_PROGRESS + LUDO_HOME_LANE_LENGTH + 1;
-const LUDO_MAX_PROGRESS = LUDO_CENTER_PROGRESS;
+const TOKEN_STEP_ANIMATION_MS = 210;
 const ENTRY_OFFSETS = [0, 13, 26, 39];
 const ROLL_TIMEOUT_MS = 5000;
 const SAFE_TRACK_INDEXES = [0, 8, 13, 21, 26, 34, 39, 47];
@@ -354,6 +354,30 @@ function resolveWinnerName(state: LudoState | null) {
   return null;
 }
 
+function normalizeTokenProgressMap(
+  playerOrder: string[],
+  tokenProgress: Record<string, number[]> | null | undefined,
+) {
+  return playerOrder.reduce<Record<string, number[]>>((accumulator, player) => {
+    const sourceProgress = tokenProgress?.[player] ?? [];
+    accumulator[player] = Array.from({ length: TOKEN_COUNT }, (_, index) => {
+      const value = sourceProgress[index];
+      return Number.isFinite(value) ? (value as number) : 0;
+    });
+    return accumulator;
+  }, {});
+}
+
+function cloneTokenProgressMap(source: Record<string, number[]>) {
+  return Object.entries(source).reduce<Record<string, number[]>>(
+    (accumulator, [playerName, progressValues]) => {
+      accumulator[playerName] = [...progressValues];
+      return accumulator;
+    },
+    {},
+  );
+}
+
 export default function LudoGame({
   roomCode,
   socket,
@@ -364,13 +388,20 @@ export default function LudoGame({
 }: LudoGameProps) {
   const [isHowToOpen, setIsHowToOpen] = useState(false);
   const [gameState, setGameState] = useState<LudoState | null>(null);
+  const [displayTokenProgress, setDisplayTokenProgress] = useState<
+    Record<string, number[]>
+  >({});
   const [gameError, setGameError] = useState("");
   const [pendingChoice, setPendingChoice] =
     useState<LudoChoiceRequiredEvent | null>(null);
   const [isRolling, setIsRolling] = useState(false);
+  const [isTokenAnimating, setIsTokenAnimating] = useState(false);
   const [diceFace, setDiceFace] = useState(1);
   const isHydratedRef = useRef(false);
   const isRollingRef = useRef(false);
+  const displayTokenProgressRef = useRef<Record<string, number[]>>({});
+  const tokenAnimationSequenceRef = useRef(0);
+  const tokenAnimationTimeoutsRef = useRef<number[]>([]);
   const diceAudioContextRef = useRef<AudioContext | null>(null);
   const diceAudioPulseIntervalRef = useRef<number | null>(null);
   const diceAudioStopTimeoutRef = useRef<number | null>(null);
@@ -401,6 +432,13 @@ export default function LudoGame({
     localPlayerBoardSlotIndex,
   );
 
+  const clearTokenAnimationTimers = () => {
+    tokenAnimationTimeoutsRef.current.forEach((timeoutId) => {
+      window.clearTimeout(timeoutId);
+    });
+    tokenAnimationTimeoutsRef.current = [];
+  };
+
   useEffect(() => {
     const resetTimeoutId = window.setTimeout(() => {
       if (diceAudioPulseIntervalRef.current !== null) {
@@ -425,9 +463,14 @@ export default function LudoGame({
 
       rollStartedAtRef.current = 0;
       setGameState(null);
+      clearTokenAnimationTimers();
+      tokenAnimationSequenceRef.current += 1;
+      setDisplayTokenProgress({});
+      displayTokenProgressRef.current = {};
       setGameError("");
       setPendingChoice(null);
       setIsRolling(false);
+      setIsTokenAnimating(false);
       isRollingRef.current = false;
       setDiceFace(1);
       isHydratedRef.current = false;
@@ -561,7 +604,100 @@ export default function LudoGame({
         setDiceFace(payload.lastMove.roll);
       }
 
+      const normalizedTargetProgress = normalizeTokenProgressMap(
+        payload.playerOrder,
+        payload.tokenProgress,
+      );
+
+      const applyProgressImmediately = () => {
+        clearTokenAnimationTimers();
+        tokenAnimationSequenceRef.current += 1;
+        setDisplayTokenProgress(normalizedTargetProgress);
+        displayTokenProgressRef.current = normalizedTargetProgress;
+        setIsTokenAnimating(false);
+      };
+
+      const previousProgress = displayTokenProgressRef.current;
+      const hasPreviousProgress = Object.keys(previousProgress).length > 0;
+
       setGameState(payload);
+
+      if (!hasPreviousProgress || !isHydratedRef.current || !payload.lastMove) {
+        applyProgressImmediately();
+      } else {
+        const {
+          playerName: movedPlayerName,
+          tokenIndex,
+          from,
+          to,
+          kind,
+        } = payload.lastMove;
+        const playerProgress = previousProgress[movedPlayerName] ?? [];
+        const currentProgress = playerProgress[tokenIndex] ?? from;
+        const startProgress = Number.isFinite(currentProgress)
+          ? currentProgress
+          : from;
+        const targetProgress = Number.isFinite(to) ? to : startProgress;
+        const shouldAnimateMove =
+          kind !== "blocked" &&
+          Number.isFinite(tokenIndex) &&
+          tokenIndex >= 0 &&
+          tokenIndex < TOKEN_COUNT &&
+          movedPlayerName.trim().length > 0 &&
+          startProgress !== targetProgress;
+
+        if (!shouldAnimateMove) {
+          applyProgressImmediately();
+        } else {
+          clearTokenAnimationTimers();
+          const sequenceId = tokenAnimationSequenceRef.current + 1;
+          tokenAnimationSequenceRef.current = sequenceId;
+          setIsTokenAnimating(true);
+
+          const movingDirection = targetProgress > startProgress ? 1 : -1;
+          const stepCount = Math.abs(targetProgress - startProgress);
+          const steps = Array.from(
+            { length: stepCount },
+            (_, stepIndex) => startProgress + movingDirection * (stepIndex + 1),
+          );
+
+          steps.forEach((progressStep, stepIndex) => {
+            const timeoutId = window.setTimeout(
+              () => {
+                if (tokenAnimationSequenceRef.current !== sequenceId) {
+                  return;
+                }
+
+                if (stepIndex === steps.length - 1) {
+                  setDisplayTokenProgress(normalizedTargetProgress);
+                  displayTokenProgressRef.current = normalizedTargetProgress;
+                  setIsTokenAnimating(false);
+                  return;
+                }
+
+                setDisplayTokenProgress((currentMap) => {
+                  const baseMap =
+                    Object.keys(currentMap).length > 0
+                      ? currentMap
+                      : cloneTokenProgressMap(previousProgress);
+                  const nextMap = cloneTokenProgressMap(baseMap);
+                  const row = nextMap[movedPlayerName]
+                    ? [...nextMap[movedPlayerName]]
+                    : Array.from({ length: TOKEN_COUNT }, () => 0);
+                  row[tokenIndex] = progressStep;
+                  nextMap[movedPlayerName] = row;
+                  displayTokenProgressRef.current = nextMap;
+                  return nextMap;
+                });
+              },
+              TOKEN_STEP_ANIMATION_MS * (stepIndex + 1),
+            );
+
+            tokenAnimationTimeoutsRef.current.push(timeoutId);
+          });
+        }
+      }
+
       setIsRolling(false);
       isRollingRef.current = false;
       setGameError("");
@@ -627,6 +763,9 @@ export default function LudoGame({
         window.clearTimeout(rollTimeoutRef.current);
         rollTimeoutRef.current = null;
       }
+
+      clearTokenAnimationTimers();
+      tokenAnimationSequenceRef.current += 1;
 
       socket.off("ludo:state", onState);
       socket.off("ludo:choice-required", onChoiceRequired);
@@ -695,6 +834,7 @@ export default function LudoGame({
         playerIndex,
       );
       const progresses =
+        displayTokenProgress[playerName] ??
         gameState?.tokenProgress[playerName] ??
         Array.from({ length: TOKEN_COUNT }, () => 0);
 
@@ -884,7 +1024,11 @@ export default function LudoGame({
               className={styles.diceTrigger}
               onClick={onRollDice}
               disabled={
-                !isSocketConnected || !isMyTurn || isRolling || !!pendingChoice
+                !isSocketConnected ||
+                !isMyTurn ||
+                isRolling ||
+                isTokenAnimating ||
+                !!pendingChoice
               }
               aria-label={
                 isRolling
@@ -940,13 +1084,6 @@ export default function LudoGame({
                 );
                 const isCurrentPlayer = currentTurnPlayer === playerName;
                 const playerOnline = onlinePlayerNames.includes(playerName);
-                const tokenProgress = gameState?.tokenProgress[playerName] ?? [
-                  0, 0, 0, 0,
-                ];
-                const finishedCount = tokenProgress.filter(
-                  (progress) => progress === LUDO_MAX_PROGRESS,
-                ).length;
-
                 return (
                   <li
                     key={playerName}
@@ -984,11 +1121,6 @@ export default function LudoGame({
                           : "Online"
                         : "Offline"}
                     </span>
-                    {finishedCount > 0 ? (
-                      <span className={styles.playerLegendMeta}>
-                        {finishedCount}/4 home
-                      </span>
-                    ) : null}
                   </li>
                 );
               })}

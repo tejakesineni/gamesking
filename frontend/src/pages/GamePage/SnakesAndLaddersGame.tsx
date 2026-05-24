@@ -20,6 +20,7 @@ type SnakesAndLaddersGameProps = {
 const BOARD_SIZE = 10;
 const PLAYER_COLORS = ["#f97316", "#0ea5e9", "#8b5cf6", "#16a34a", "#e11d48"];
 const STEP_MOVE_DELAY_MS = 160;
+const SNAKE_LADDER_SLIDE_MS = 520;
 const MIN_DICE_ROLL_MS = 1400;
 
 function buildStepPath(from: number, to: number) {
@@ -112,12 +113,19 @@ export default function SnakesAndLaddersGame({
   const [animatedPositions, setAnimatedPositions] = useState<
     Record<string, number>
   >({});
+  const [slidingTokenPlayerName, setSlidingTokenPlayerName] = useState<
+    string | null
+  >(null);
+  const [animatingTurnPlayerName, setAnimatingTurnPlayerName] = useState<
+    string | null
+  >(null);
   const lastAnimatedMoveKeyRef = useRef("");
   const isHydratedRef = useRef(false);
   const animationTimeoutsRef = useRef<number[]>([]);
   const diceAudioContextRef = useRef<AudioContext | null>(null);
   const diceAudioPulseIntervalRef = useRef<number | null>(null);
   const diceAudioStopTimeoutRef = useRef<number | null>(null);
+  const isRollingRef = useRef(false);
   const rollStartedAtRef = useRef(0);
   const pendingStateTimeoutRef = useRef<number | null>(null);
   const infoPopoverRef = useRef<HTMLDivElement | null>(null);
@@ -128,10 +136,11 @@ export default function SnakesAndLaddersGame({
     gameState && playerOrder.length
       ? (playerOrder[gameState.currentTurnIndex] ?? "")
       : "";
+  const displayedTurnPlayer = animatingTurnPlayerName ?? currentTurnPlayer;
   const isMyTurn =
     !!localPlayerName &&
     gameState?.status === "running" &&
-    currentTurnPlayer === localPlayerName;
+    displayedTurnPlayer === localPlayerName;
   const winnerName = resolveWinnerName(gameState);
 
   useEffect(() => {
@@ -161,8 +170,11 @@ export default function SnakesAndLaddersGame({
       setGameState(null);
       setGameError("");
       setIsRolling(false);
+      isRollingRef.current = false;
       setDiceFace(1);
       setAnimatedPositions({});
+      setSlidingTokenPlayerName(null);
+      setAnimatingTurnPlayerName(null);
       lastAnimatedMoveKeyRef.current = "";
       isHydratedRef.current = false;
     }, 0);
@@ -296,6 +308,7 @@ export default function SnakesAndLaddersGame({
 
         setGameState(payload);
         setIsRolling(false);
+        isRollingRef.current = false;
         setGameError("");
         rollStartedAtRef.current = 0;
 
@@ -305,6 +318,8 @@ export default function SnakesAndLaddersGame({
 
         if (!isHydratedRef.current) {
           setAnimatedPositions(payload.positions);
+          setSlidingTokenPlayerName(null);
+          setAnimatingTurnPlayerName(null);
           isHydratedRef.current = true;
           lastAnimatedMoveKeyRef.current = moveKey;
           return;
@@ -312,6 +327,8 @@ export default function SnakesAndLaddersGame({
 
         if (!move || lastAnimatedMoveKeyRef.current === moveKey) {
           setAnimatedPositions(payload.positions);
+          setSlidingTokenPlayerName(null);
+          setAnimatingTurnPlayerName(null);
           return;
         }
 
@@ -321,6 +338,8 @@ export default function SnakesAndLaddersGame({
           window.clearTimeout(timeoutId);
         });
         animationTimeoutsRef.current = [];
+        setSlidingTokenPlayerName(null);
+        setAnimatingTurnPlayerName(move.playerName);
 
         const isBlockedMove = move.kind === "blocked";
         const rollLandingPosition = isBlockedMove
@@ -339,6 +358,7 @@ export default function SnakesAndLaddersGame({
 
         if (regularPath.length === 0 && !hasSnakeOrLadderJump) {
           setAnimatedPositions(payload.positions);
+          setAnimatingTurnPlayerName(null);
           return;
         }
 
@@ -360,6 +380,7 @@ export default function SnakesAndLaddersGame({
 
         if (hasSnakeOrLadderJump) {
           const jumpTimeoutId = window.setTimeout(() => {
+            setSlidingTokenPlayerName(move.playerName);
             setAnimatedPositions((currentPositions) => ({
               ...currentPositions,
               [move.playerName]: move.to,
@@ -371,9 +392,14 @@ export default function SnakesAndLaddersGame({
         const settleTimeoutId = window.setTimeout(
           () => {
             setAnimatedPositions(payload.positions);
+            setSlidingTokenPlayerName(null);
+            setAnimatingTurnPlayerName(null);
           },
-          regularPathFinishDelay +
-            STEP_MOVE_DELAY_MS * (hasSnakeOrLadderJump ? 2 : 1),
+          hasSnakeOrLadderJump
+            ? regularPathFinishDelay +
+                STEP_MOVE_DELAY_MS +
+                SNAKE_LADDER_SLIDE_MS
+            : regularPathFinishDelay + STEP_MOVE_DELAY_MS,
         );
         animationTimeoutsRef.current.push(settleTimeoutId);
       };
@@ -387,7 +413,7 @@ export default function SnakesAndLaddersGame({
         !!move &&
         !!localPlayerName &&
         move.playerName === localPlayerName &&
-        isRolling &&
+        isRollingRef.current &&
         rollStartedAtRef.current > 0;
 
       if (isLocalRollResult) {
@@ -420,6 +446,9 @@ export default function SnakesAndLaddersGame({
 
       setGameError(payload.message ?? "Unable to process the move.");
       setIsRolling(false);
+      isRollingRef.current = false;
+      setSlidingTokenPlayerName(null);
+      setAnimatingTurnPlayerName(null);
     };
 
     socket.on("snl:state", onState);
@@ -440,7 +469,7 @@ export default function SnakesAndLaddersGame({
       socket.off("snl:state", onState);
       socket.off("snl:error", onError);
     };
-  }, [isRolling, localPlayerName, roomCode, socket]);
+  }, [localPlayerName, roomCode, socket]);
 
   const onRollDice = () => {
     if (!socket || !socket.connected || !localPlayerName || !isMyTurn) {
@@ -455,6 +484,7 @@ export default function SnakesAndLaddersGame({
     }
 
     setIsRolling(true);
+    isRollingRef.current = true;
     setGameError("");
     socket.emit("snl:roll", {
       roomCode,
@@ -553,6 +583,10 @@ export default function SnakesAndLaddersGame({
                     gameState?.lastMove?.playerName === playerName
                       ? styles.tokenActive
                       : ""
+                  } ${
+                    slidingTokenPlayerName === playerName
+                      ? styles.tokenSliding
+                      : ""
                   }`}
                   style={{
                     left: coordinates.left,
@@ -620,7 +654,7 @@ export default function SnakesAndLaddersGame({
             <div className={styles.playerLegendPanel}>
               <ul className={styles.playerLegendGrid}>
                 {playerLegendPlayers.map((playerName, index) => {
-                  const isCurrentPlayer = currentTurnPlayer === playerName;
+                  const isCurrentPlayer = displayedTurnPlayer === playerName;
                   const playerOnline = isPlayerOnline(playerName);
 
                   return (
