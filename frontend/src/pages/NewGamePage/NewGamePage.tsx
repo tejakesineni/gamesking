@@ -7,12 +7,12 @@ import type { GameOption, NewGameFormState } from "../../types/game";
 import { createRoom } from "./NewGamePage.service";
 
 const gameOptions: GameOption[] = [
-  "Bingo",
+  // "Bingo",
   "Blind Four",
   "Chess",
   "Ludo",
   "Snakes and Ladders",
-  "Tambola",
+  // "Tambola",
   "Tic Tac Toe",
 ];
 
