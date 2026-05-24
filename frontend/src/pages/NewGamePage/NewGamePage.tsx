@@ -8,6 +8,7 @@ import { createRoom } from "./NewGamePage.service";
 
 const gameOptions: GameOption[] = [
   "Bingo",
+  "Blind Four",
   "Chess",
   "Ludo",
   "Snakes and Ladders",

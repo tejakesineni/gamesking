@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { BlindFourStateEntity } from './blind-four-state.entity';
 import { ChessStateEntity } from './chess-state.entity';
 import { RoomUser } from './room-user.entity';
 import { Room } from './room.entity';
@@ -19,6 +20,7 @@ import { TicTacToeStateEntity } from './ttt-state.entity';
       LudoStateEntity,
       TicTacToeStateEntity,
       ChessStateEntity,
+      BlindFourStateEntity,
     ]),
   ],
   controllers: [RoomsController],

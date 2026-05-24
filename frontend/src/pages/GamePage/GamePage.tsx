@@ -12,6 +12,7 @@ import { connectWaitingRoomSocket } from "./GamePage.service";
 import { fetchWaitingRoom } from "./GamePage.service";
 import SnakesAndLaddersGame from "./SnakesAndLaddersGame";
 import LudoGame from "./LudoGame";
+import BlindFourGame from "./BlindFourGame";
 import ChessGame from "./ChessGame";
 import TicTacToeGame from "./TicTacToeGame";
 import type {
@@ -372,6 +373,19 @@ export default function GamePage() {
     if (gameKey === "ludo") {
       return (
         <LudoGame
+          roomCode={roomCode}
+          socket={liveSocket}
+          players={roomDetails?.players ?? []}
+          localPlayerName={localPlayerName}
+          isSocketConnected={isSocketConnected}
+          onlinePlayerNames={onlinePlayerNames}
+        />
+      );
+    }
+
+    if (gameKey === "blind four") {
+      return (
+        <BlindFourGame
           roomCode={roomCode}
           socket={liveSocket}
           players={roomDetails?.players ?? []}

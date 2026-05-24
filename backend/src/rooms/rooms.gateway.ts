@@ -12,6 +12,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Chess } from 'chess.js';
 import { Server, Socket } from 'socket.io';
 import { Repository } from 'typeorm';
+import { BlindFourStateEntity } from './blind-four-state.entity';
 import { ChessStateEntity } from './chess-state.entity';
 import { RoomsService } from './rooms.service';
 import { RoomStatus } from './room.entity';
@@ -163,6 +164,170 @@ type ChessMovePayload = {
   promotion?: string;
 };
 
+type BlindFourCard = {
+  id: string;
+  rank: string;
+  suit: string;
+  locked?: boolean;
+  lockedByCard?: {
+    id: string;
+    rank: string;
+    suit: string;
+  } | null;
+};
+
+type BlindFourLastAction = {
+  playerName: string;
+  action: string;
+  detail: string;
+};
+
+type BlindFourPendingJokerChoice = {
+  playerName: string;
+  options: Array<
+    | 'lock-card'
+    | 'swap-card'
+    | 'shuffle-cards'
+    | 'pick-your-cards'
+    | 'see-opponent-card'
+  >;
+};
+
+type BlindFourPendingLockChoice = {
+  playerName: string;
+  source: 'joker-lock' | 'king-discard';
+  lockingCard?: BlindFourCard | null;
+};
+
+type BlindFourPendingSwapChoice = {
+  playerName: string;
+  source: 'joker-swap' | 'queen-discard';
+};
+
+type BlindFourPendingShuffleChoice = {
+  playerName: string;
+  source: 'joker-shuffle' | 'jack-discard';
+  targetPlayers: string[];
+};
+
+type BlindFourPendingTenChoice = {
+  playerName: string;
+  options: Array<'pick-your-cards' | 'see-opponent-card'>;
+};
+
+type BlindFourPendingSeeOwnCards = {
+  playerName: string;
+  startedAt: string;
+  durationMs: number;
+};
+
+type BlindFourPendingPeekChoice = {
+  playerName: string;
+  source: 'joker-peek-opponent' | 'ten-peek-opponent';
+  targetPlayers: string[];
+};
+
+type BlindFourActivePeekReveal = {
+  playerName: string;
+  targetPlayerName: string;
+  slotIndex: number;
+  startedAt: string;
+  durationMs: number;
+};
+
+type BlindFourState = {
+  roomCode: string;
+  playerOrder: string[];
+  hands: Record<string, BlindFourCard[]>;
+  deckCount: number;
+  discardTop: BlindFourCard | null;
+  pendingDrawCard: BlindFourCard | null;
+  initialPeekIndexes: Record<string, number[]>;
+  setupReady: Record<string, boolean>;
+  phase: 'setup' | 'running';
+  currentTurnIndex: number;
+  currentTurnPlayer: string | null;
+  status: 'running' | 'finished';
+  winner: string | null;
+  scores: Record<string, number> | null;
+  knocker: string | null;
+  turnsAfterKnock: number;
+  lastAction: BlindFourLastAction | null;
+  pendingJokerChoice: BlindFourPendingJokerChoice | null;
+  pendingLockChoice: BlindFourPendingLockChoice | null;
+  pendingSwapChoice: BlindFourPendingSwapChoice | null;
+  pendingShuffleChoice: BlindFourPendingShuffleChoice | null;
+  pendingTenChoice: BlindFourPendingTenChoice | null;
+  pendingSeeOwnCards: BlindFourPendingSeeOwnCards | null;
+  pendingPeekChoice: BlindFourPendingPeekChoice | null;
+  activePeekReveal: BlindFourActivePeekReveal | null;
+};
+
+type BlindFourBasePayload = {
+  playerName?: string;
+};
+
+type BlindFourSlotPayload = BlindFourBasePayload & {
+  slotIndex?: number;
+};
+
+type BlindFourTakeDiscardPayload = BlindFourBasePayload & {
+  slotIndex?: number;
+};
+
+type BlindFourReorderPayload = BlindFourBasePayload & {
+  order?: number[];
+};
+
+type BlindFourChooseJokerPayload = BlindFourBasePayload & {
+  power?: string;
+};
+
+type BlindFourChooseTenPayload = BlindFourBasePayload & {
+  power?: string;
+};
+
+type BlindFourChooseLockTargetPayload = BlindFourBasePayload & {
+  targetPlayerName?: string;
+  slotIndex?: number;
+};
+
+type BlindFourChooseSwapTargetPayload = BlindFourBasePayload & {
+  fromPlayerName?: string;
+  fromSlotIndex?: number;
+  toPlayerName?: string;
+  toSlotIndex?: number;
+};
+
+type BlindFourChooseShuffleTargetPayload = BlindFourBasePayload & {
+  targetPlayerName?: string;
+};
+
+type BlindFourChoosePeekTargetPayload = BlindFourBasePayload & {
+  targetPlayerName?: string;
+  slotIndex?: number;
+};
+
+const BLIND_FOUR_RANKS = [
+  'A',
+  '2',
+  '3',
+  '4',
+  '5',
+  '6',
+  '7',
+  '8',
+  '9',
+  '10',
+  'J',
+  'Q',
+  'K',
+];
+
+const BLIND_FOUR_SUITS = ['S', 'H', 'D', 'C'];
+const BLIND_FOUR_SEE_OWN_CARDS_DURATION_MS = 10000;
+const BLIND_FOUR_PEEK_OPPONENT_DURATION_MS = 7000;
+
 const TIC_TAC_TOE_WIN_LINES: Array<[number, number, number]> = [
   [0, 1, 2],
   [3, 4, 5],
@@ -240,6 +405,8 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly ticTacToeStateRepository: Repository<TicTacToeStateEntity>,
     @InjectRepository(ChessStateEntity)
     private readonly chessStateRepository: Repository<ChessStateEntity>,
+    @InjectRepository(BlindFourStateEntity)
+    private readonly blindFourStateRepository: Repository<BlindFourStateEntity>,
   ) {}
 
   @WebSocketServer()
@@ -531,7 +698,1447 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (state) {
         this.server?.to(roomCode).emit('chess:state', state);
       }
+      return;
     }
+
+    if (game === 'blind four') {
+      const existingState = await this.loadBlindFourState(roomCode);
+
+      if (existingState) {
+        this.server?.to(roomCode).emit('blind4:state', existingState);
+        return;
+      }
+
+      const state = await this.getOrCreateBlindFourState(roomCode);
+
+      if (state) {
+        this.server?.to(roomCode).emit('blind4:state', state);
+      }
+    }
+  }
+
+  @SubscribeMessage('blind4:sync')
+  async handleBlindFourSync(@ConnectedSocket() client: Socket) {
+    const roomCode = this.getRoomCode(client);
+
+    if (!roomCode) {
+      return;
+    }
+
+    const state = await this.getOrCreateBlindFourState(roomCode, client);
+
+    if (!state) {
+      return;
+    }
+
+    client.emit('blind4:state', state);
+  }
+
+  @SubscribeMessage('blind4:reorder')
+  async handleBlindFourReorder(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: BlindFourReorderPayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+    const order = Array.isArray(payload?.order)
+      ? payload.order
+      : ([] as number[]);
+
+    if (!roomCode || !playerName) {
+      return;
+    }
+
+    const entity = await this.loadBlindFourStateEntity(roomCode);
+
+    if (!entity) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Game state not found.',
+      });
+      return;
+    }
+
+    if (entity.status === 'finished') {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Game already finished.',
+      });
+      return;
+    }
+
+    if (entity.phase !== 'setup') {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Reorder is available only during setup.',
+      });
+      return;
+    }
+
+    if (!entity.playerOrder.includes(playerName)) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'You are not a player in this game.',
+      });
+      return;
+    }
+
+    if (entity.setupReady?.[playerName]) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'You are already ready.',
+      });
+      return;
+    }
+
+    const cards = entity.hands[playerName] ?? [];
+
+    if (cards.length === 0) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'No cards to reorder.',
+      });
+      return;
+    }
+
+    if (order.length !== cards.length) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Invalid reorder payload.',
+      });
+      return;
+    }
+
+    const uniqueIndexes = new Set(order);
+
+    if (uniqueIndexes.size !== cards.length) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Order must contain unique indexes.',
+      });
+      return;
+    }
+
+    const reordered = order.map((index) => cards[index]).filter(Boolean);
+
+    if (reordered.length !== cards.length) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Order contains invalid indexes.',
+      });
+      return;
+    }
+
+    entity.hands[playerName] = reordered;
+    entity.lastAction = {
+      playerName,
+      action: 'reorder',
+      detail: 'Reordered own cards.',
+    };
+
+    await this.blindFourStateRepository.save(entity);
+    this.server
+      ?.to(roomCode)
+      .emit('blind4:state', this.buildBlindFourStateFromEntity(entity));
+  }
+
+  @SubscribeMessage('blind4:ready')
+  async handleBlindFourReady(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: BlindFourBasePayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+
+    if (!roomCode || !playerName) {
+      return;
+    }
+
+    const entity = await this.loadBlindFourStateEntity(roomCode);
+
+    if (!entity) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Game state not found.',
+      });
+      return;
+    }
+
+    if (entity.status === 'finished') {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Game already finished.',
+      });
+      return;
+    }
+
+    if (entity.phase !== 'setup') {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Setup already completed.',
+      });
+      return;
+    }
+
+    if (!entity.playerOrder.includes(playerName)) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'You are not a player in this game.',
+      });
+      return;
+    }
+
+    entity.setupReady = {
+      ...(entity.setupReady ?? {}),
+      [playerName]: true,
+    };
+
+    entity.lastAction = {
+      playerName,
+      action: 'ready',
+      detail: 'Locked setup order and is ready.',
+    };
+
+    const everyoneReady = entity.playerOrder.every(
+      (name) => !!entity.setupReady?.[name],
+    );
+
+    if (everyoneReady) {
+      entity.phase = 'running';
+      entity.lastAction = {
+        playerName,
+        action: 'setup-complete',
+        detail: 'All players ready. Round started.',
+      };
+    }
+
+    await this.blindFourStateRepository.save(entity);
+    this.server
+      ?.to(roomCode)
+      .emit('blind4:state', this.buildBlindFourStateFromEntity(entity));
+  }
+
+  @SubscribeMessage('blind4:draw')
+  async handleBlindFourDraw(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: BlindFourBasePayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+
+    if (!roomCode || !playerName) {
+      return;
+    }
+
+    const entity = await this.getBlindFourEntityForTurn(
+      roomCode,
+      playerName,
+      client,
+    );
+
+    if (!entity) {
+      return;
+    }
+
+    if (entity.pendingDrawCard) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Resolve your drawn card first.',
+      });
+      return;
+    }
+
+    let reshuffledFromDiscard = false;
+
+    if (entity.deck.length === 0) {
+      if (entity.discardPile.length <= 1) {
+        client.emit('blind4:error', {
+          roomCode,
+          message: 'Deck is empty.',
+        });
+        return;
+      }
+
+      const discardTop = entity.discardPile.pop();
+
+      if (!discardTop) {
+        client.emit('blind4:error', {
+          roomCode,
+          message: 'Deck is empty.',
+        });
+        return;
+      }
+
+      const recycledDeck = entity.discardPile.map((card) => ({
+        ...card,
+        locked: false,
+        lockedByCard: null,
+      }));
+
+      for (let index = recycledDeck.length - 1; index > 0; index -= 1) {
+        const randomIndex = Math.floor(Math.random() * (index + 1));
+        const temp = recycledDeck[index];
+        recycledDeck[index] = recycledDeck[randomIndex];
+        recycledDeck[randomIndex] = temp;
+      }
+
+      entity.deck = recycledDeck;
+      entity.discardPile = [discardTop];
+      reshuffledFromDiscard = true;
+    }
+
+    const drawn = entity.deck.shift();
+
+    if (!drawn) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Deck is empty.',
+      });
+      return;
+    }
+
+    entity.pendingDrawCard = drawn;
+    entity.lastAction = {
+      playerName,
+      action: 'draw',
+      detail: reshuffledFromDiscard
+        ? 'Drew from deck after reshuffling discard pile.'
+        : 'Drew from deck.',
+    };
+
+    await this.blindFourStateRepository.save(entity);
+    this.server
+      ?.to(roomCode)
+      .emit('blind4:state', this.buildBlindFourStateFromEntity(entity));
+  }
+
+  @SubscribeMessage('blind4:take-discard')
+  async handleBlindFourTakeDiscard(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: BlindFourTakeDiscardPayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+    const slotIndex =
+      typeof payload?.slotIndex === 'number' &&
+      Number.isInteger(payload.slotIndex)
+        ? payload.slotIndex
+        : -1;
+
+    if (!roomCode || !playerName) {
+      return;
+    }
+
+    const entity = await this.getBlindFourEntityForTurn(
+      roomCode,
+      playerName,
+      client,
+    );
+
+    if (!entity) {
+      return;
+    }
+
+    if (entity.pendingDrawCard) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Use or discard your drawn card first.',
+      });
+      return;
+    }
+
+    const playerCards = entity.hands[playerName] ?? [];
+
+    if (slotIndex < 0 || slotIndex >= playerCards.length) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Choose a valid card slot.',
+      });
+      return;
+    }
+
+    const cardToReplace = playerCards[slotIndex];
+
+    if (!cardToReplace || cardToReplace.locked) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'That card is locked and cannot be swapped.',
+      });
+      return;
+    }
+
+    const discardTop = entity.discardPile.pop();
+
+    if (!discardTop) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Discard pile is empty.',
+      });
+      return;
+    }
+
+    playerCards[slotIndex] = { ...discardTop, locked: false };
+    entity.hands[playerName] = playerCards;
+    entity.discardPile.push({ ...cardToReplace, locked: false });
+    entity.lastAction = {
+      playerName,
+      action: 'take-discard',
+      detail: `Swapped discard into slot ${slotIndex + 1}.`,
+    };
+
+    const shouldCompleteTurn = this.applyBlindFourDiscardPower(
+      entity,
+      playerName,
+      cardToReplace,
+    );
+
+    if (shouldCompleteTurn) {
+      this.completeBlindFourTurn(entity, playerName);
+    }
+    await this.blindFourStateRepository.save(entity);
+    this.server
+      ?.to(roomCode)
+      .emit('blind4:state', this.buildBlindFourStateFromEntity(entity));
+  }
+
+  @SubscribeMessage('blind4:swap-drawn')
+  async handleBlindFourSwapDrawn(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: BlindFourSlotPayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+    const slotIndex =
+      typeof payload?.slotIndex === 'number' &&
+      Number.isInteger(payload.slotIndex)
+        ? payload.slotIndex
+        : -1;
+
+    if (!roomCode || !playerName) {
+      return;
+    }
+
+    const entity = await this.getBlindFourEntityForTurn(
+      roomCode,
+      playerName,
+      client,
+    );
+
+    if (!entity) {
+      return;
+    }
+
+    if (!entity.pendingDrawCard) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Draw a card first.',
+      });
+      return;
+    }
+
+    const playerCards = entity.hands[playerName] ?? [];
+
+    if (slotIndex < 0 || slotIndex >= playerCards.length) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Choose a valid card slot.',
+      });
+      return;
+    }
+
+    const cardToReplace = playerCards[slotIndex];
+
+    if (!cardToReplace || cardToReplace.locked) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'That card is locked and cannot be swapped.',
+      });
+      return;
+    }
+
+    playerCards[slotIndex] = { ...entity.pendingDrawCard, locked: false };
+    entity.hands[playerName] = playerCards;
+    entity.discardPile.push({ ...cardToReplace, locked: false });
+    entity.pendingDrawCard = null;
+    entity.lastAction = {
+      playerName,
+      action: 'swap-drawn',
+      detail: `Swapped drawn card into slot ${slotIndex + 1}.`,
+    };
+
+    const shouldCompleteTurn = this.applyBlindFourDiscardPower(
+      entity,
+      playerName,
+      cardToReplace,
+    );
+
+    if (shouldCompleteTurn) {
+      this.completeBlindFourTurn(entity, playerName);
+    }
+    await this.blindFourStateRepository.save(entity);
+    this.server
+      ?.to(roomCode)
+      .emit('blind4:state', this.buildBlindFourStateFromEntity(entity));
+  }
+
+  @SubscribeMessage('blind4:discard-drawn')
+  async handleBlindFourDiscardDrawn(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: BlindFourBasePayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+
+    if (!roomCode || !playerName) {
+      return;
+    }
+
+    const entity = await this.getBlindFourEntityForTurn(
+      roomCode,
+      playerName,
+      client,
+    );
+
+    if (!entity) {
+      return;
+    }
+
+    if (!entity.pendingDrawCard) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'No drawn card to discard.',
+      });
+      return;
+    }
+
+    const discarded = { ...entity.pendingDrawCard, locked: false };
+    entity.pendingDrawCard = null;
+    entity.discardPile.push(discarded);
+    entity.lastAction = {
+      playerName,
+      action: 'discard-drawn',
+      detail: 'Discarded drawn card.',
+    };
+
+    const shouldCompleteTurn = this.applyBlindFourDiscardPower(
+      entity,
+      playerName,
+      discarded,
+    );
+
+    if (shouldCompleteTurn) {
+      this.completeBlindFourTurn(entity, playerName);
+    }
+    await this.blindFourStateRepository.save(entity);
+    this.server
+      ?.to(roomCode)
+      .emit('blind4:state', this.buildBlindFourStateFromEntity(entity));
+  }
+
+  @SubscribeMessage('blind4:slap')
+  async handleBlindFourSlap(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: BlindFourSlotPayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+    const slotIndex =
+      typeof payload?.slotIndex === 'number' &&
+      Number.isInteger(payload.slotIndex)
+        ? payload.slotIndex
+        : -1;
+
+    if (!roomCode || !playerName) {
+      return;
+    }
+
+    const entity = await this.loadBlindFourStateEntity(roomCode);
+
+    if (!entity) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Game state not found.',
+      });
+      return;
+    }
+
+    if (entity.status === 'finished') {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Game already finished.',
+      });
+      return;
+    }
+
+    const activeSeeOwnCards = this.getActiveBlindFourSeeOwnCards(entity);
+
+    if (activeSeeOwnCards && activeSeeOwnCards.playerName !== playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: `${activeSeeOwnCards.playerName} is seeing cards. Please wait.`,
+      });
+      return;
+    }
+
+    const activePeekReveal = this.getActiveBlindFourPeekReveal(entity);
+
+    if (activePeekReveal && activePeekReveal.playerName !== playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: `${activePeekReveal.playerName} is seeing an opponent card. Please wait.`,
+      });
+      return;
+    }
+
+    if (entity.pendingJokerChoice) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: `${entity.pendingJokerChoice.playerName} must choose Joker power first.`,
+      });
+      return;
+    }
+
+    const topDiscard = entity.discardPile[entity.discardPile.length - 1];
+    const playerCards = entity.hands[playerName] ?? [];
+
+    if (!topDiscard || slotIndex < 0 || slotIndex >= playerCards.length) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Invalid slap target.',
+      });
+      return;
+    }
+
+    const targetCard = playerCards[slotIndex];
+
+    if (!targetCard || targetCard.locked) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'That card cannot be slapped.',
+      });
+      return;
+    }
+
+    if (targetCard.rank !== topDiscard.rank) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Slap failed. Rank does not match discard top.',
+      });
+      return;
+    }
+
+    const [removed] = playerCards.splice(slotIndex, 1);
+    entity.hands[playerName] = playerCards;
+    entity.discardPile.push({ ...removed, locked: false });
+    entity.lastAction = {
+      playerName,
+      action: 'slap',
+      detail: `Slapped slot ${slotIndex + 1} and discarded a matching rank.`,
+    };
+
+    await this.blindFourStateRepository.save(entity);
+    this.server
+      ?.to(roomCode)
+      .emit('blind4:state', this.buildBlindFourStateFromEntity(entity));
+  }
+
+  @SubscribeMessage('blind4:choose-joker-power')
+  async handleBlindFourChooseJokerPower(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: BlindFourChooseJokerPayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+    const power =
+      typeof payload?.power === 'string' ? payload.power.trim() : '';
+
+    if (!roomCode || !playerName) {
+      return;
+    }
+
+    const entity = await this.loadBlindFourStateEntity(roomCode);
+
+    if (!entity) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Game state not found.',
+      });
+      return;
+    }
+
+    if (entity.status === 'finished') {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Game already finished.',
+      });
+      return;
+    }
+
+    const pendingChoice = entity.pendingJokerChoice;
+
+    if (!pendingChoice) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'There is no pending Joker power choice.',
+      });
+      return;
+    }
+
+    if (pendingChoice.playerName !== playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Only the current player can choose Joker power.',
+      });
+      return;
+    }
+
+    const currentPlayer = entity.playerOrder[entity.currentTurnIndex] ?? '';
+
+    if (currentPlayer !== playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: `It is ${currentPlayer}'s turn.`,
+      });
+      return;
+    }
+
+    if (
+      power !== 'lock-card' &&
+      power !== 'swap-card' &&
+      power !== 'shuffle-cards' &&
+      power !== 'pick-your-cards' &&
+      power !== 'see-opponent-card'
+    ) {
+      client.emit('blind4:error', {
+        roomCode,
+        message:
+          'Choose a valid Joker power option before continuing your turn.',
+      });
+      return;
+    }
+
+    if (power === 'lock-card') {
+      const hasLockableTarget = entity.playerOrder.some((name) =>
+        (entity.hands[name] ?? []).some((card) => !!card && !card.locked),
+      );
+
+      if (!hasLockableTarget) {
+        entity.lastAction = {
+          playerName,
+          action: 'power-k',
+          detail: 'Power used: no available card to lock.',
+        };
+        this.completeBlindFourTurn(entity, playerName);
+      } else {
+        const discardTop = entity.discardPile[entity.discardPile.length - 1];
+
+        if (!discardTop) {
+          client.emit('blind4:error', {
+            roomCode,
+            message: 'Joker lock is unavailable right now.',
+          });
+          return;
+        }
+
+        const lockingCard = entity.discardPile.pop() ?? discardTop;
+
+        entity.pendingLockChoice = {
+          playerName,
+          source: 'joker-lock',
+          lockingCard: {
+            ...lockingCard,
+            locked: false,
+            lockedByCard: null,
+          },
+        };
+        entity.lastAction = {
+          playerName,
+          action: 'power-k',
+          detail:
+            'Joker lock used: choose any card (yours or opponent) to lock.',
+        };
+      }
+    } else if (power === 'swap-card') {
+      const playersWithUnlockedCards = entity.playerOrder.filter((name) =>
+        (entity.hands[name] ?? []).some((card) => !!card && !card.locked),
+      );
+
+      if (playersWithUnlockedCards.length < 2) {
+        entity.lastAction = {
+          playerName,
+          action: 'power-q',
+          detail: 'Power used: no valid players/cards available for swap.',
+        };
+        this.completeBlindFourTurn(entity, playerName);
+      } else {
+        entity.pendingSwapChoice = {
+          playerName,
+          source: 'joker-swap',
+        };
+        entity.lastAction = {
+          playerName,
+          action: 'power-q',
+          detail: 'Drag a card onto another player card to swap.',
+        };
+      }
+    } else if (power === 'shuffle-cards') {
+      const targetPlayers = entity.playerOrder.filter(
+        (name) =>
+          name !== playerName &&
+          (entity.hands[name] ?? []).some((card) => !!card && !card.locked),
+      );
+
+      if (targetPlayers.length === 0) {
+        entity.lastAction = {
+          playerName,
+          action: 'power-j',
+          detail: 'Power used: no valid opponent cards available to shuffle.',
+        };
+        this.completeBlindFourTurn(entity, playerName);
+      } else {
+        entity.pendingShuffleChoice = {
+          playerName,
+          source: 'joker-shuffle',
+          targetPlayers,
+        };
+        entity.lastAction = {
+          playerName,
+          action: 'power-j',
+          detail: 'Choose an opponent to shuffle cards.',
+        };
+      }
+    } else if (power === 'pick-your-cards') {
+      this.applyBlindFourTenPower(entity, playerName);
+      this.completeBlindFourTurn(entity, playerName);
+    } else {
+      const targetPlayers = entity.playerOrder.filter(
+        (name) => name !== playerName && (entity.hands[name] ?? []).length > 0,
+      );
+
+      if (targetPlayers.length === 0) {
+        entity.lastAction = {
+          playerName,
+          action: 'power-peek-opponent',
+          detail: 'Power used: no opponent card available to peek.',
+        };
+        this.completeBlindFourTurn(entity, playerName);
+      } else {
+        entity.pendingPeekChoice = {
+          playerName,
+          source: 'joker-peek-opponent',
+          targetPlayers,
+        };
+        entity.lastAction = {
+          playerName,
+          action: 'power-peek-opponent',
+          detail: 'Choose one opponent card to see for 7 seconds.',
+        };
+      }
+    }
+
+    entity.pendingJokerChoice = null;
+
+    if (!entity.lastAction || !entity.lastAction.action.startsWith('power-')) {
+      entity.lastAction = {
+        playerName,
+        action: 'power-joker',
+        detail: `Joker power used: ${power}.`,
+      };
+    }
+
+    await this.blindFourStateRepository.save(entity);
+    this.server
+      ?.to(roomCode)
+      .emit('blind4:state', this.buildBlindFourStateFromEntity(entity));
+  }
+
+  @SubscribeMessage('blind4:choose-peek-target')
+  async handleBlindFourChoosePeekTarget(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: BlindFourChoosePeekTargetPayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+    const targetPlayerName =
+      typeof payload?.targetPlayerName === 'string'
+        ? payload.targetPlayerName.trim()
+        : '';
+    const slotIndex =
+      typeof payload?.slotIndex === 'number' &&
+      Number.isInteger(payload.slotIndex)
+        ? payload.slotIndex
+        : -1;
+
+    if (!roomCode || !playerName || !targetPlayerName) {
+      return;
+    }
+
+    const entity = await this.loadBlindFourStateEntity(roomCode);
+
+    if (!entity) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Game state not found.',
+      });
+      return;
+    }
+
+    const pendingPeek = entity.pendingPeekChoice;
+
+    if (!pendingPeek) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'There is no pending opponent card choice.',
+      });
+      return;
+    }
+
+    if (pendingPeek.playerName !== playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Only the active player can choose an opponent card.',
+      });
+      return;
+    }
+
+    const currentPlayer = entity.playerOrder[entity.currentTurnIndex] ?? '';
+
+    if (currentPlayer !== playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: `It is ${currentPlayer}'s turn.`,
+      });
+      return;
+    }
+
+    if (!pendingPeek.targetPlayers.includes(targetPlayerName)) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Choose a valid opponent player.',
+      });
+      return;
+    }
+
+    if (targetPlayerName === playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Choose an opponent card, not your own.',
+      });
+      return;
+    }
+
+    const targetCards = entity.hands[targetPlayerName] ?? [];
+
+    if (slotIndex < 0 || slotIndex >= targetCards.length) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Choose a valid opponent card slot.',
+      });
+      return;
+    }
+
+    entity.pendingPeekChoice = null;
+    entity.activePeekReveal = {
+      playerName,
+      targetPlayerName,
+      slotIndex,
+      startedAt: new Date().toISOString(),
+      durationMs: BLIND_FOUR_PEEK_OPPONENT_DURATION_MS,
+    };
+    entity.lastAction = {
+      playerName,
+      action: 'power-peek-opponent',
+      detail: `Seeing ${targetPlayerName} card ${slotIndex + 1} for 7 seconds.`,
+    };
+
+    this.completeBlindFourTurn(entity, playerName);
+    await this.blindFourStateRepository.save(entity);
+    this.server
+      ?.to(roomCode)
+      .emit('blind4:state', this.buildBlindFourStateFromEntity(entity));
+  }
+
+  @SubscribeMessage('blind4:choose-ten-power')
+  async handleBlindFourChooseTenPower(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: BlindFourChooseTenPayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+    const power =
+      typeof payload?.power === 'string' ? payload.power.trim() : '';
+
+    if (!roomCode || !playerName) {
+      return;
+    }
+
+    const entity = await this.loadBlindFourStateEntity(roomCode);
+
+    if (!entity) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Game state not found.',
+      });
+      return;
+    }
+
+    if (entity.status === 'finished') {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Game already finished.',
+      });
+      return;
+    }
+
+    const pendingChoice = entity.pendingTenChoice;
+
+    if (!pendingChoice) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'There is no pending 10 power choice.',
+      });
+      return;
+    }
+
+    if (pendingChoice.playerName !== playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Only the current player can choose 10 power.',
+      });
+      return;
+    }
+
+    const currentPlayer = entity.playerOrder[entity.currentTurnIndex] ?? '';
+
+    if (currentPlayer !== playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: `It is ${currentPlayer}'s turn.`,
+      });
+      return;
+    }
+
+    if (power !== 'pick-your-cards' && power !== 'see-opponent-card') {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Choose a valid 10 power option before continuing your turn.',
+      });
+      return;
+    }
+
+    if (power === 'pick-your-cards') {
+      this.applyBlindFourTenPower(entity, playerName);
+      this.completeBlindFourTurn(entity, playerName);
+    } else {
+      const targetPlayers = entity.playerOrder.filter(
+        (name) => name !== playerName && (entity.hands[name] ?? []).length > 0,
+      );
+
+      if (targetPlayers.length === 0) {
+        entity.lastAction = {
+          playerName,
+          action: 'power-peek-opponent',
+          detail: 'Power used: no opponent card available to peek.',
+        };
+        this.completeBlindFourTurn(entity, playerName);
+      } else {
+        entity.pendingPeekChoice = {
+          playerName,
+          source: 'ten-peek-opponent',
+          targetPlayers,
+        };
+        entity.lastAction = {
+          playerName,
+          action: 'power-peek-opponent',
+          detail: 'Choose one opponent card to see for 7 seconds.',
+        };
+      }
+    }
+
+    entity.pendingTenChoice = null;
+
+    await this.blindFourStateRepository.save(entity);
+    this.server
+      ?.to(roomCode)
+      .emit('blind4:state', this.buildBlindFourStateFromEntity(entity));
+  }
+
+  @SubscribeMessage('blind4:choose-shuffle-target')
+  async handleBlindFourChooseShuffleTarget(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: BlindFourChooseShuffleTargetPayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+    const targetPlayerName =
+      typeof payload?.targetPlayerName === 'string'
+        ? payload.targetPlayerName.trim()
+        : '';
+
+    if (!roomCode || !playerName || !targetPlayerName) {
+      return;
+    }
+
+    const entity = await this.loadBlindFourStateEntity(roomCode);
+
+    if (!entity) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Game state not found.',
+      });
+      return;
+    }
+
+    const pendingShuffle = entity.pendingShuffleChoice;
+
+    if (!pendingShuffle) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'There is no pending shuffle target choice.',
+      });
+      return;
+    }
+
+    if (pendingShuffle.playerName !== playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Only the active player can choose shuffle target.',
+      });
+      return;
+    }
+
+    const currentPlayer = entity.playerOrder[entity.currentTurnIndex] ?? '';
+
+    if (currentPlayer !== playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: `It is ${currentPlayer}'s turn.`,
+      });
+      return;
+    }
+
+    if (!pendingShuffle.targetPlayers.includes(targetPlayerName)) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Choose a valid target player to shuffle.',
+      });
+      return;
+    }
+
+    this.applyBlindFourJackPowerToTarget(entity, playerName, targetPlayerName);
+    entity.pendingShuffleChoice = null;
+
+    this.completeBlindFourTurn(entity, playerName);
+    await this.blindFourStateRepository.save(entity);
+    this.server
+      ?.to(roomCode)
+      .emit('blind4:state', this.buildBlindFourStateFromEntity(entity));
+  }
+
+  @SubscribeMessage('blind4:choose-swap-target')
+  async handleBlindFourChooseSwapTarget(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: BlindFourChooseSwapTargetPayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+    const fromPlayerName =
+      typeof payload?.fromPlayerName === 'string'
+        ? payload.fromPlayerName.trim()
+        : '';
+    const toPlayerName =
+      typeof payload?.toPlayerName === 'string'
+        ? payload.toPlayerName.trim()
+        : '';
+    const fromSlotIndex =
+      typeof payload?.fromSlotIndex === 'number' &&
+      Number.isInteger(payload.fromSlotIndex)
+        ? payload.fromSlotIndex
+        : -1;
+    const toSlotIndex =
+      typeof payload?.toSlotIndex === 'number' &&
+      Number.isInteger(payload.toSlotIndex)
+        ? payload.toSlotIndex
+        : -1;
+
+    if (!roomCode || !playerName || !fromPlayerName || !toPlayerName) {
+      return;
+    }
+
+    const entity = await this.loadBlindFourStateEntity(roomCode);
+
+    if (!entity) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Game state not found.',
+      });
+      return;
+    }
+
+    const pendingSwap = entity.pendingSwapChoice;
+
+    if (!pendingSwap) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'There is no pending swap target choice.',
+      });
+      return;
+    }
+
+    if (pendingSwap.playerName !== playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Only the active player can choose swap targets.',
+      });
+      return;
+    }
+
+    const currentPlayer = entity.playerOrder[entity.currentTurnIndex] ?? '';
+
+    if (currentPlayer !== playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: `It is ${currentPlayer}'s turn.`,
+      });
+      return;
+    }
+
+    if (fromPlayerName === toPlayerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Choose cards from different players to swap.',
+      });
+      return;
+    }
+
+    if (
+      !entity.playerOrder.includes(fromPlayerName) ||
+      !entity.playerOrder.includes(toPlayerName)
+    ) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Choose valid players for swap.',
+      });
+      return;
+    }
+
+    const fromCards = entity.hands[fromPlayerName] ?? [];
+    const toCards = entity.hands[toPlayerName] ?? [];
+
+    if (
+      fromSlotIndex < 0 ||
+      fromSlotIndex >= fromCards.length ||
+      toSlotIndex < 0 ||
+      toSlotIndex >= toCards.length
+    ) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Choose valid card indexes for swap.',
+      });
+      return;
+    }
+
+    const fromCard = fromCards[fromSlotIndex];
+    const toCard = toCards[toSlotIndex];
+
+    if (!fromCard || !toCard || fromCard.locked || toCard.locked) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Locked cards cannot be swapped.',
+      });
+      return;
+    }
+
+    fromCards[fromSlotIndex] = { ...toCard, locked: false };
+    toCards[toSlotIndex] = { ...fromCard, locked: false };
+    entity.hands[fromPlayerName] = fromCards;
+    entity.hands[toPlayerName] = toCards;
+    entity.pendingSwapChoice = null;
+    entity.lastAction = {
+      playerName,
+      action: 'power-q',
+      detail: `Swapped ${fromPlayerName} card ${fromSlotIndex + 1} with ${toPlayerName} card ${toSlotIndex + 1}.`,
+    };
+
+    this.completeBlindFourTurn(entity, playerName);
+    await this.blindFourStateRepository.save(entity);
+    this.server
+      ?.to(roomCode)
+      .emit('blind4:state', this.buildBlindFourStateFromEntity(entity));
+  }
+
+  @SubscribeMessage('blind4:choose-lock-target')
+  async handleBlindFourChooseLockTarget(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: BlindFourChooseLockTargetPayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+    const targetPlayerName =
+      typeof payload?.targetPlayerName === 'string'
+        ? payload.targetPlayerName.trim()
+        : '';
+    const slotIndex =
+      typeof payload?.slotIndex === 'number' &&
+      Number.isInteger(payload.slotIndex)
+        ? payload.slotIndex
+        : -1;
+
+    if (!roomCode || !playerName || !targetPlayerName) {
+      return;
+    }
+
+    const entity = await this.loadBlindFourStateEntity(roomCode);
+
+    if (!entity) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Game state not found.',
+      });
+      return;
+    }
+
+    const pendingLock = entity.pendingLockChoice;
+
+    if (!pendingLock) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'There is no pending lock target choice.',
+      });
+      return;
+    }
+
+    if (pendingLock.playerName !== playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Only the active player can choose lock target.',
+      });
+      return;
+    }
+
+    const currentPlayer = entity.playerOrder[entity.currentTurnIndex] ?? '';
+
+    if (currentPlayer !== playerName) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: `It is ${currentPlayer}'s turn.`,
+      });
+      return;
+    }
+
+    if (!entity.playerOrder.includes(targetPlayerName)) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Choose a valid target player.',
+      });
+      return;
+    }
+
+    const cards = entity.hands[targetPlayerName] ?? [];
+
+    if (slotIndex < 0 || slotIndex >= cards.length) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Choose a valid target card.',
+      });
+      return;
+    }
+
+    const targetCard = cards[slotIndex];
+
+    if (!targetCard || targetCard.locked) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Selected card is already locked or invalid.',
+      });
+      return;
+    }
+
+    cards[slotIndex] = {
+      ...targetCard,
+      locked: true,
+      lockedByCard: pendingLock.lockingCard
+        ? {
+            id: pendingLock.lockingCard.id,
+            rank: pendingLock.lockingCard.rank,
+            suit: pendingLock.lockingCard.suit,
+          }
+        : (targetCard.lockedByCard ?? null),
+    };
+    entity.hands[targetPlayerName] = cards;
+    entity.pendingLockChoice = null;
+    entity.lastAction = {
+      playerName,
+      action: 'power-k',
+      detail: `Locked card ${slotIndex + 1} of ${targetPlayerName}.`,
+    };
+
+    this.completeBlindFourTurn(entity, playerName);
+    await this.blindFourStateRepository.save(entity);
+    this.server
+      ?.to(roomCode)
+      .emit('blind4:state', this.buildBlindFourStateFromEntity(entity));
+  }
+
+  @SubscribeMessage('blind4:knock')
+  async handleBlindFourKnock(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: BlindFourBasePayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+
+    if (!roomCode || !playerName) {
+      return;
+    }
+
+    const entity = await this.getBlindFourEntityForTurn(
+      roomCode,
+      playerName,
+      client,
+    );
+
+    if (!entity) {
+      return;
+    }
+
+    if (entity.pendingDrawCard) {
+      client.emit('blind4:error', {
+        roomCode,
+        message: 'Resolve your drawn card first.',
+      });
+      return;
+    }
+
+    if (!entity.knocker) {
+      entity.knocker = playerName;
+      entity.turnsAfterKnock = Math.max(0, entity.playerOrder.length - 1);
+      entity.lastAction = {
+        playerName,
+        action: 'knock',
+        detail: 'Called Knock. Others get one final turn.',
+      };
+    }
+
+    this.completeBlindFourTurn(entity, playerName);
+    await this.blindFourStateRepository.save(entity);
+    this.server
+      ?.to(roomCode)
+      .emit('blind4:state', this.buildBlindFourStateFromEntity(entity));
   }
 
   @SubscribeMessage('chess:sync')
@@ -1106,6 +2713,757 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       isCheck: chess.isCheck(),
       lastMove: stateEntity.lastMove,
     } satisfies ChessState;
+  }
+
+  private async getOrCreateBlindFourState(roomCode: string, client?: Socket) {
+    const existingState = await this.loadBlindFourState(roomCode);
+
+    if (existingState) {
+      return existingState;
+    }
+
+    const room = await this.roomsService.findOne(roomCode).catch(() => null);
+
+    if (!room) {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: 'Room not found.',
+      });
+      return null;
+    }
+
+    if (room.status !== RoomStatus.LIVE) {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: 'Game has not started yet.',
+      });
+      return null;
+    }
+
+    if (room.game.trim().toLowerCase() !== 'blind four') {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: 'This room is not a Blind Four game.',
+      });
+      return null;
+    }
+
+    const playerOrder = room.players.map((player) => player.playerName.trim());
+
+    if (playerOrder.length < 2) {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: 'Need at least two players to play.',
+      });
+      return null;
+    }
+
+    const deck = this.createBlindFourDeck();
+    const hands: Record<string, BlindFourCard[]> = {};
+    const initialPeekIndexes: Record<string, number[]> = {};
+    const setupReady: Record<string, boolean> = {};
+
+    for (const playerName of playerOrder) {
+      hands[playerName] = [
+        deck.pop()!,
+        deck.pop()!,
+        deck.pop()!,
+        deck.pop()!,
+      ].map((card) => ({ ...card, locked: false }));
+      initialPeekIndexes[playerName] = [0, 3];
+      setupReady[playerName] = false;
+    }
+
+    const discardFirst = deck.pop();
+
+    if (!discardFirst) {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: 'Unable to initialize deck.',
+      });
+      return null;
+    }
+
+    const stateEntity = this.blindFourStateRepository.create({
+      roomCode,
+      playerOrder,
+      hands,
+      deck,
+      discardPile: [discardFirst],
+      pendingDrawCard: null,
+      initialPeekIndexes,
+      setupReady,
+      phase: 'setup',
+      currentTurnIndex: 0,
+      status: 'running',
+      winner: null,
+      scores: null,
+      knocker: null,
+      turnsAfterKnock: 0,
+      lastAction: null,
+      pendingJokerChoice: null,
+      pendingLockChoice: null,
+      pendingSwapChoice: null,
+      pendingShuffleChoice: null,
+      pendingTenChoice: null,
+      pendingSeeOwnCards: null,
+      pendingPeekChoice: null,
+      activePeekReveal: null,
+    });
+
+    await this.blindFourStateRepository.save(stateEntity);
+    return this.buildBlindFourStateFromEntity(stateEntity);
+  }
+
+  private async loadBlindFourStateEntity(roomCode: string) {
+    return this.blindFourStateRepository.findOne({
+      where: {
+        roomCode,
+      },
+    });
+  }
+
+  private async loadBlindFourState(roomCode: string) {
+    const entity = await this.loadBlindFourStateEntity(roomCode);
+
+    if (!entity) {
+      return null;
+    }
+
+    return this.buildBlindFourStateFromEntity(entity);
+  }
+
+  private buildBlindFourStateFromEntity(entity: BlindFourStateEntity) {
+    const setupReady = entity.setupReady ?? {};
+    const phase = entity.phase ?? 'running';
+
+    const pendingSeeOwnCards = this.getActiveBlindFourSeeOwnCards(entity);
+    const activePeekReveal = this.getActiveBlindFourPeekReveal(entity);
+
+    return {
+      roomCode: entity.roomCode,
+      playerOrder: entity.playerOrder,
+      hands: entity.hands,
+      deckCount: entity.deck.length,
+      discardTop: entity.discardPile[entity.discardPile.length - 1] ?? null,
+      pendingDrawCard: entity.pendingDrawCard,
+      initialPeekIndexes: entity.initialPeekIndexes,
+      setupReady,
+      phase,
+      currentTurnIndex: entity.currentTurnIndex,
+      currentTurnPlayer: entity.playerOrder[entity.currentTurnIndex] ?? null,
+      status: entity.status,
+      winner: entity.winner,
+      scores: entity.scores,
+      knocker: entity.knocker,
+      turnsAfterKnock: entity.turnsAfterKnock,
+      lastAction: entity.lastAction,
+      pendingJokerChoice: entity.pendingJokerChoice ?? null,
+      pendingLockChoice: entity.pendingLockChoice ?? null,
+      pendingSwapChoice: entity.pendingSwapChoice ?? null,
+      pendingShuffleChoice: entity.pendingShuffleChoice ?? null,
+      pendingTenChoice: entity.pendingTenChoice ?? null,
+      pendingSeeOwnCards,
+      pendingPeekChoice: entity.pendingPeekChoice ?? null,
+      activePeekReveal,
+    } satisfies BlindFourState;
+  }
+
+  private getActiveBlindFourSeeOwnCards(entity: BlindFourStateEntity) {
+    const pending = entity.pendingSeeOwnCards;
+
+    if (!pending) {
+      return null;
+    }
+
+    const startedAtMs = Date.parse(pending.startedAt);
+
+    if (!Number.isFinite(startedAtMs)) {
+      entity.pendingSeeOwnCards = null;
+      return null;
+    }
+
+    const isStillActive =
+      Date.now() - startedAtMs < Math.max(0, pending.durationMs);
+
+    if (!isStillActive) {
+      entity.pendingSeeOwnCards = null;
+      return null;
+    }
+
+    return pending;
+  }
+
+  private getActiveBlindFourPeekReveal(entity: BlindFourStateEntity) {
+    const active = entity.activePeekReveal;
+
+    if (!active) {
+      return null;
+    }
+
+    const startedAtMs = Date.parse(active.startedAt);
+
+    if (!Number.isFinite(startedAtMs)) {
+      entity.activePeekReveal = null;
+      return null;
+    }
+
+    const isStillActive =
+      Date.now() - startedAtMs < Math.max(0, active.durationMs);
+
+    if (!isStillActive) {
+      entity.activePeekReveal = null;
+      return null;
+    }
+
+    return active;
+  }
+
+  private async getBlindFourEntityForTurn(
+    roomCode: string,
+    playerName: string,
+    client?: Socket,
+  ) {
+    const entity = await this.loadBlindFourStateEntity(roomCode);
+
+    if (!entity) {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: 'Game state not found.',
+      });
+      return null;
+    }
+
+    if (entity.status === 'finished') {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: 'Game already finished.',
+      });
+      return null;
+    }
+
+    const activeSeeOwnCards = this.getActiveBlindFourSeeOwnCards(entity);
+    const activePeekReveal = this.getActiveBlindFourPeekReveal(entity);
+
+    if (activeSeeOwnCards && activeSeeOwnCards.playerName !== playerName) {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: `${activeSeeOwnCards.playerName} is seeing cards. Please wait.`,
+      });
+      return null;
+    }
+
+    if (activePeekReveal && activePeekReveal.playerName !== playerName) {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: `${activePeekReveal.playerName} is seeing an opponent card. Please wait.`,
+      });
+      return null;
+    }
+
+    if (entity.phase !== 'running') {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: 'Waiting for all players to finish setup and press ready.',
+      });
+      return null;
+    }
+
+    if (
+      entity.pendingJokerChoice &&
+      entity.pendingJokerChoice.playerName === playerName
+    ) {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: 'Choose Joker power before continuing your turn.',
+      });
+      return null;
+    }
+
+    if (
+      entity.pendingLockChoice &&
+      entity.pendingLockChoice.playerName === playerName
+    ) {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: 'Choose lock target before continuing your turn.',
+      });
+      return null;
+    }
+
+    if (
+      entity.pendingSwapChoice &&
+      entity.pendingSwapChoice.playerName === playerName
+    ) {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: 'Choose swap targets before continuing your turn.',
+      });
+      return null;
+    }
+
+    if (
+      entity.pendingShuffleChoice &&
+      entity.pendingShuffleChoice.playerName === playerName
+    ) {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: 'Choose shuffle target before continuing your turn.',
+      });
+      return null;
+    }
+
+    if (
+      entity.pendingTenChoice &&
+      entity.pendingTenChoice.playerName === playerName
+    ) {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: 'Choose 10 power option before continuing your turn.',
+      });
+      return null;
+    }
+
+    if (
+      entity.pendingPeekChoice &&
+      entity.pendingPeekChoice.playerName === playerName
+    ) {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: 'Choose an opponent card to see before continuing your turn.',
+      });
+      return null;
+    }
+
+    const currentPlayer = entity.playerOrder[entity.currentTurnIndex] ?? '';
+
+    if (currentPlayer !== playerName) {
+      client?.emit('blind4:error', {
+        roomCode,
+        message: `It is ${currentPlayer}'s turn.`,
+      });
+      return null;
+    }
+
+    return entity;
+  }
+
+  private completeBlindFourTurn(
+    entity: BlindFourStateEntity,
+    playerName: string,
+  ) {
+    if (entity.status === 'finished') {
+      return;
+    }
+
+    if (
+      entity.knocker &&
+      playerName !== entity.knocker &&
+      entity.turnsAfterKnock > 0
+    ) {
+      entity.turnsAfterKnock -= 1;
+    }
+
+    if (entity.knocker && entity.turnsAfterKnock <= 0) {
+      this.finishBlindFourRound(entity);
+      return;
+    }
+
+    entity.currentTurnIndex =
+      (entity.currentTurnIndex + 1) % entity.playerOrder.length;
+  }
+
+  private finishBlindFourRound(entity: BlindFourStateEntity) {
+    const scores = entity.playerOrder.reduce<Record<string, number>>(
+      (accumulator, playerName) => {
+        const cards = entity.hands[playerName] ?? [];
+        accumulator[playerName] = cards.reduce(
+          (sum, card) => sum + this.getBlindFourCardPoints(card),
+          0,
+        );
+        return accumulator;
+      },
+      {},
+    );
+
+    let winner: string | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    for (const playerName of entity.playerOrder) {
+      const score = scores[playerName] ?? Number.POSITIVE_INFINITY;
+
+      if (score < bestScore) {
+        bestScore = score;
+        winner = playerName;
+      }
+    }
+
+    entity.status = 'finished';
+    entity.scores = scores;
+    entity.winner = winner;
+    entity.pendingDrawCard = null;
+    entity.pendingJokerChoice = null;
+    entity.pendingLockChoice = null;
+    entity.pendingSwapChoice = null;
+    entity.pendingShuffleChoice = null;
+    entity.pendingTenChoice = null;
+    entity.pendingSeeOwnCards = null;
+    entity.pendingPeekChoice = null;
+    entity.activePeekReveal = null;
+  }
+
+  private getBlindFourCardPoints(card: BlindFourCard) {
+    if (card.rank === 'A') {
+      return 1;
+    }
+
+    if (card.rank === '7') {
+      return 0;
+    }
+
+    if (card.rank === 'JKR') {
+      return 20;
+    }
+
+    if (card.rank === 'J' || card.rank === 'Q' || card.rank === 'K') {
+      return 10;
+    }
+
+    return Number(card.rank);
+  }
+
+  private applyBlindFourDiscardPower(
+    entity: BlindFourStateEntity,
+    playerName: string,
+    discardedCard: BlindFourCard,
+  ) {
+    const rank = discardedCard.rank;
+
+    if (rank === '10') {
+      entity.pendingTenChoice = {
+        playerName,
+        options: ['pick-your-cards', 'see-opponent-card'],
+      };
+      entity.lastAction = {
+        playerName,
+        action: 'power-10',
+        detail: '10 used: choose to see your cards or one opponent card.',
+      };
+      return false;
+    }
+
+    if (rank === 'Q') {
+      const playersWithUnlockedCards = entity.playerOrder.filter((name) =>
+        (entity.hands[name] ?? []).some((card) => !!card && !card.locked),
+      );
+
+      if (playersWithUnlockedCards.length < 2) {
+        entity.lastAction = {
+          playerName,
+          action: 'power-q',
+          detail: 'Power used: no valid players/cards available for swap.',
+        };
+        return true;
+      }
+
+      entity.pendingSwapChoice = {
+        playerName,
+        source: 'queen-discard',
+      };
+      entity.lastAction = {
+        playerName,
+        action: 'power-q',
+        detail: 'Queen used: drag a card onto another player card to swap.',
+      };
+      return false;
+    }
+
+    if (rank === 'J') {
+      const targetPlayers = entity.playerOrder.filter(
+        (name) => name !== playerName,
+      );
+
+      if (targetPlayers.length === 0) {
+        entity.lastAction = {
+          playerName,
+          action: 'power-j',
+          detail: 'Power used: no opponent available to shuffle.',
+        };
+        return true;
+      }
+
+      entity.pendingShuffleChoice = {
+        playerName,
+        source: 'jack-discard',
+        targetPlayers,
+      };
+      entity.lastAction = {
+        playerName,
+        action: 'power-j',
+        detail: 'Jack used: choose opponent to shuffle cards.',
+      };
+      return false;
+    }
+
+    if (rank === 'K') {
+      const hasLockableTarget = entity.playerOrder.some((name) =>
+        (entity.hands[name] ?? []).some((card) => !!card && !card.locked),
+      );
+
+      if (!hasLockableTarget) {
+        entity.lastAction = {
+          playerName,
+          action: 'power-k',
+          detail: 'Power used: no available card to lock.',
+        };
+        return true;
+      }
+
+      const discardTop = entity.discardPile[entity.discardPile.length - 1];
+      const lockingCard =
+        discardTop?.id === discardedCard.id
+          ? (entity.discardPile.pop() ?? discardedCard)
+          : discardedCard;
+
+      entity.pendingLockChoice = {
+        playerName,
+        source: 'king-discard',
+        lockingCard: {
+          ...lockingCard,
+          locked: false,
+          lockedByCard: null,
+        },
+      };
+      entity.lastAction = {
+        playerName,
+        action: 'power-k',
+        detail: 'King used: click any card (yours or opponent) to lock.',
+      };
+      return false;
+    }
+
+    if (rank === 'JKR') {
+      entity.pendingJokerChoice = {
+        playerName,
+        options: [
+          'lock-card',
+          'swap-card',
+          'shuffle-cards',
+          'pick-your-cards',
+          'see-opponent-card',
+        ],
+      };
+
+      entity.lastAction = {
+        playerName,
+        action: 'power-joker',
+        detail: 'Joker discarded: choose one of the 5 power options.',
+      };
+
+      return false;
+    }
+
+    return true;
+  }
+
+  private applyBlindFourQueenPower(
+    entity: BlindFourStateEntity,
+    playerName: string,
+  ) {
+    const opponent = entity.playerOrder.find((name) => name !== playerName);
+
+    if (!opponent) {
+      return;
+    }
+
+    const ownCards = entity.hands[playerName] ?? [];
+    const oppCards = entity.hands[opponent] ?? [];
+
+    const ownIndexes = ownCards
+      .map((card, index) => ({ card, index }))
+      .filter(({ card }) => !!card && !card.locked)
+      .map(({ index }) => index);
+    const oppIndexes = oppCards
+      .map((card, index) => ({ card, index }))
+      .filter(({ card }) => !!card && !card.locked)
+      .map(({ index }) => index);
+
+    if (ownIndexes.length === 0 || oppIndexes.length === 0) {
+      return;
+    }
+
+    const ownIndex = ownIndexes[Math.floor(Math.random() * ownIndexes.length)];
+    const oppIndex = oppIndexes[Math.floor(Math.random() * oppIndexes.length)];
+    const ownCard = ownCards[ownIndex];
+    ownCards[ownIndex] = oppCards[oppIndex];
+    oppCards[oppIndex] = ownCard;
+    entity.hands[playerName] = ownCards;
+    entity.hands[opponent] = oppCards;
+    entity.lastAction = {
+      playerName,
+      action: 'power-q',
+      detail: `Power used: swapped one card with ${opponent}.`,
+    };
+  }
+
+  private applyBlindFourTenPower(
+    entity: BlindFourStateEntity,
+    playerName: string,
+  ) {
+    entity.pendingSeeOwnCards = {
+      playerName,
+      startedAt: new Date().toISOString(),
+      durationMs: BLIND_FOUR_SEE_OWN_CARDS_DURATION_MS,
+    };
+
+    entity.lastAction = {
+      playerName,
+      action: 'power-10',
+      detail: 'Power used: seeing own cards for 10 seconds.',
+    };
+  }
+
+  private applyBlindFourJackPower(
+    entity: BlindFourStateEntity,
+    playerName: string,
+  ) {
+    const opponent = entity.playerOrder.find((name) => name !== playerName);
+
+    if (!opponent) {
+      return;
+    }
+
+    const cards = [...(entity.hands[opponent] ?? [])];
+
+    this.shuffleBlindFourCardsPreservingLockedSlots(cards);
+
+    entity.hands[opponent] = cards;
+    entity.lastAction = {
+      playerName,
+      action: 'power-j',
+      detail: `Power used: shuffled ${opponent}'s cards.`,
+    };
+  }
+
+  private applyBlindFourJackPowerToTarget(
+    entity: BlindFourStateEntity,
+    playerName: string,
+    targetPlayerName: string,
+  ) {
+    const cards = [...(entity.hands[targetPlayerName] ?? [])];
+
+    this.shuffleBlindFourCardsPreservingLockedSlots(cards);
+
+    entity.hands[targetPlayerName] = cards;
+    entity.lastAction = {
+      playerName,
+      action: 'power-j',
+      detail: `Power used: shuffled ${targetPlayerName}'s cards.`,
+    };
+  }
+
+  private shuffleBlindFourCardsPreservingLockedSlots(cards: BlindFourCard[]) {
+    const unlockedIndexes = cards
+      .map((card, index) => ({ card, index }))
+      .filter(({ card }) => !!card && !card.locked)
+      .map(({ index }) => index);
+
+    const unlockedCards = unlockedIndexes.map((index) => cards[index]);
+
+    for (let index = unlockedCards.length - 1; index > 0; index -= 1) {
+      const randomIndex = Math.floor(Math.random() * (index + 1));
+      const temp = unlockedCards[index];
+      unlockedCards[index] = unlockedCards[randomIndex];
+      unlockedCards[randomIndex] = temp;
+    }
+
+    unlockedIndexes.forEach((slotIndex, position) => {
+      cards[slotIndex] = unlockedCards[position];
+    });
+  }
+
+  private applyBlindFourKingPower(
+    entity: BlindFourStateEntity,
+    playerName: string,
+  ) {
+    const allTargets = entity.playerOrder.flatMap((name) =>
+      (entity.hands[name] ?? [])
+        .map((card, index) => ({ name, index, card }))
+        .filter(({ card }) => !!card && !card.locked),
+    );
+
+    if (allTargets.length === 0) {
+      return;
+    }
+
+    const randomTarget =
+      allTargets[Math.floor(Math.random() * allTargets.length)];
+    const cards = entity.hands[randomTarget.name] ?? [];
+    const targetCard = cards[randomTarget.index];
+
+    if (!targetCard) {
+      return;
+    }
+
+    cards[randomTarget.index] = {
+      ...targetCard,
+      locked: true,
+    };
+    entity.hands[randomTarget.name] = cards;
+    entity.lastAction = {
+      playerName,
+      action: 'power-k',
+      detail: `Power used: locked one card of ${randomTarget.name}.`,
+    };
+  }
+
+  private applyBlindFourPeekOpponentPower(
+    entity: BlindFourStateEntity,
+    playerName: string,
+  ) {
+    const opponent = entity.playerOrder.find((name) => name !== playerName);
+
+    if (!opponent) {
+      entity.lastAction = {
+        playerName,
+        action: 'power-peek-opponent',
+        detail: 'Power used: no opponent card available to peek.',
+      };
+      return;
+    }
+
+    entity.lastAction = {
+      playerName,
+      action: 'power-peek-opponent',
+      detail: `Power used: saw one card of ${opponent}.`,
+    };
+  }
+
+  private createBlindFourDeck() {
+    const deck: BlindFourCard[] = [];
+
+    for (const suit of BLIND_FOUR_SUITS) {
+      for (const rank of BLIND_FOUR_RANKS) {
+        deck.push({
+          id: `${rank}-${suit}-${deck.length + 1}`,
+          rank,
+          suit,
+          locked: false,
+        });
+      }
+    }
+
+    deck.push({ id: 'JKR-1', rank: 'JKR', suit: '*', locked: false });
+    deck.push({ id: 'JKR-2', rank: 'JKR', suit: '*', locked: false });
+
+    for (let index = deck.length - 1; index > 0; index -= 1) {
+      const randomIndex = Math.floor(Math.random() * (index + 1));
+      const temp = deck[index];
+      deck[index] = deck[randomIndex];
+      deck[randomIndex] = temp;
+    }
+
+    return deck;
   }
 
   private isTicTacToeWinner(
