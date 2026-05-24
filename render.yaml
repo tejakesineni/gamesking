@@ -1,0 +1,50 @@
+services:
+  - type: web
+    name: games-backend
+    runtime: docker
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: FRONTEND_ORIGIN
+        value: https://games.kesineni.in
+      - key: DB_HOST
+        fromDatabase:
+          name: games-postgres
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: games-postgres
+          property: port
+      - key: DB_USER
+        fromDatabase:
+          name: games-postgres
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: games-postgres
+          property: password
+      - key: DB_NAME
+        fromDatabase:
+          name: games-postgres
+          property: database
+
+  - type: static
+    name: games-frontend
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    autoDeploy: true
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://api.games.kesineni.in/api
+
+databases:
+  - name: games-postgres
+    databaseName: bingo
+    user: bingo
