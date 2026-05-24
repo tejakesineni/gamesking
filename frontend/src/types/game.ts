@@ -63,3 +63,25 @@ export type SnakesAndLaddersState = {
   winner: string | null;
   lastMove: SnakesAndLaddersMove | null;
 };
+
+export type LudoMoveKind = "move" | "capture" | "blocked" | "finished";
+
+export type LudoMove = {
+  playerName: string;
+  roll: number;
+  tokenIndex: number;
+  from: number;
+  to: number;
+  kind: LudoMoveKind;
+  capturedPlayers: string[];
+};
+
+export type LudoState = {
+  roomCode: string;
+  playerOrder: string[];
+  tokenProgress: Record<string, number[]>;
+  currentTurnIndex: number;
+  status: "running" | "finished";
+  winner: string | null;
+  lastMove: LudoMove | null;
+};

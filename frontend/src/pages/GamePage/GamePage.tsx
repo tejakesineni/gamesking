@@ -11,6 +11,7 @@ import gamesKingLogo from "../../assets/games-king-logo.png";
 import { connectWaitingRoomSocket } from "./GamePage.service";
 import { fetchWaitingRoom } from "./GamePage.service";
 import SnakesAndLaddersGame from "./SnakesAndLaddersGame";
+import LudoGame from "./LudoGame";
 import type {
   RoomStatus,
   RoomUser,
@@ -368,10 +369,14 @@ export default function GamePage() {
 
     if (gameKey === "ludo") {
       return (
-        <section className={styles.liveGameSurface}>
-          <h2>Ludo Live</h2>
-          <p>Roll, move tokens, and race to bring all your tokens home.</p>
-        </section>
+        <LudoGame
+          roomCode={roomCode}
+          socket={liveSocket}
+          players={roomDetails?.players ?? []}
+          localPlayerName={localPlayerName}
+          isSocketConnected={isSocketConnected}
+          onlinePlayerNames={onlinePlayerNames}
+        />
       );
     }
 

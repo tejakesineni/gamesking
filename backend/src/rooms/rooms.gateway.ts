@@ -13,6 +13,7 @@ import { Server, Socket } from 'socket.io';
 import { Repository } from 'typeorm';
 import { RoomsService } from './rooms.service';
 import { RoomStatus } from './room.entity';
+import { LudoStateEntity } from './ludo-state.entity';
 import { SnakesAndLaddersStateEntity } from './snl-state.entity';
 
 type RoomCreatedPayload = {
@@ -66,6 +67,40 @@ type SnakesAndLaddersRollPayload = {
   playerName?: string;
 };
 
+type LudoMoveKind = 'move' | 'capture' | 'blocked' | 'finished';
+
+type LudoMove = {
+  playerName: string;
+  roll: number;
+  tokenIndex: number;
+  from: number;
+  to: number;
+  kind: LudoMoveKind;
+  capturedPlayers: string[];
+};
+
+type LudoState = {
+  roomCode: string;
+  playerOrder: string[];
+  tokenProgress: Record<string, number[]>;
+  currentTurnIndex: number;
+  status: 'running' | 'finished';
+  winner: string | null;
+  lastMove: LudoMove | null;
+};
+
+type LudoRollPayload = {
+  playerName?: string;
+  tokenIndex?: number;
+};
+
+type LudoChoiceRequiredPayload = {
+  roomCode: string;
+  playerName: string;
+  roll: number;
+  movableTokenIndexes: number[];
+};
+
 // This mapping is aligned to frontend/src/assets/sandl.jpg board artwork.
 const SNAKES_AND_LADDERS_JUMPS: Record<number, number> = {
   // Ladders
@@ -87,6 +122,24 @@ const SNAKES_AND_LADDERS_JUMPS: Record<number, number> = {
   99: 41,
 };
 
+const LUDO_TOKEN_COUNT = 4;
+const LUDO_BOARD_TRACK_LENGTH = 52;
+const LUDO_HOME_ENTRY_PROGRESS = 51;
+const LUDO_ENTRY_OFFSETS = [0, 13, 26, 39];
+const LUDO_HOME_LANE_LENGTH = 5;
+const LUDO_CENTER_PROGRESS =
+  LUDO_HOME_ENTRY_PROGRESS + LUDO_HOME_LANE_LENGTH + 1;
+const LUDO_MAX_PROGRESS = LUDO_CENTER_PROGRESS;
+const LUDO_SAFE_TRACK_INDEXES = new Set(LUDO_ENTRY_OFFSETS);
+
+function getLudoBoardSlotIndex(playerCount: number, playerIndex: number) {
+  if (playerCount === 2) {
+    return playerIndex === 0 ? 0 : 2;
+  }
+
+  return Math.max(0, Math.min(3, playerIndex));
+}
+
 @WebSocketGateway({
   cors: {
     origin: true,
@@ -94,12 +147,22 @@ const SNAKES_AND_LADDERS_JUMPS: Record<number, number> = {
 })
 export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly logger = new Logger(RoomsGateway.name);
+  private readonly pendingLudoChoices = new Map<
+    string,
+    {
+      playerName: string;
+      roll: number;
+      movableTokenIndexes: number[];
+    }
+  >();
 
   constructor(
     @Inject(forwardRef(() => RoomsService))
     private readonly roomsService: RoomsService,
     @InjectRepository(SnakesAndLaddersStateEntity)
     private readonly snakesAndLaddersStateRepository: Repository<SnakesAndLaddersStateEntity>,
+    @InjectRepository(LudoStateEntity)
+    private readonly ludoStateRepository: Repository<LudoStateEntity>,
   ) {}
 
   @WebSocketServer()
@@ -317,22 +380,48 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server.to(roomCode).emit('room:started', payload);
 
     if (payload.status === 'live') {
-      void this.ensureSnakesAndLaddersStarted(roomCode);
+      void this.ensureLiveGameStarted(roomCode);
     }
   }
 
-  private async ensureSnakesAndLaddersStarted(roomCode: string) {
-    const existingState = await this.loadSnakesAndLaddersState(roomCode);
+  private async ensureLiveGameStarted(roomCode: string) {
+    const room = await this.roomsService.findOne(roomCode).catch(() => null);
 
-    if (existingState) {
-      this.server?.to(roomCode).emit('snl:state', existingState);
+    if (!room) {
       return;
     }
 
-    const state = await this.getOrCreateSnakesAndLaddersState(roomCode);
+    const game = room.game.trim().toLowerCase();
 
-    if (state) {
-      this.server?.to(roomCode).emit('snl:state', state);
+    if (game === 'snakes and ladders') {
+      const existingState = await this.loadSnakesAndLaddersState(roomCode);
+
+      if (existingState) {
+        this.server?.to(roomCode).emit('snl:state', existingState);
+        return;
+      }
+
+      const state = await this.getOrCreateSnakesAndLaddersState(roomCode);
+
+      if (state) {
+        this.server?.to(roomCode).emit('snl:state', state);
+      }
+      return;
+    }
+
+    if (game === 'ludo') {
+      const existingState = await this.loadLudoState(roomCode);
+
+      if (existingState) {
+        this.server?.to(roomCode).emit('ludo:state', existingState);
+        return;
+      }
+
+      const state = await this.getOrCreateLudoState(roomCode);
+
+      if (state) {
+        this.server?.to(roomCode).emit('ludo:state', state);
+      }
     }
   }
 
@@ -438,6 +527,416 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
 
     await this.snakesAndLaddersStateRepository.save(stateEntity);
+  }
+
+  @SubscribeMessage('ludo:sync')
+  async handleLudoSync(@ConnectedSocket() client: Socket) {
+    const roomCode = this.getRoomCode(client);
+
+    if (!roomCode) {
+      return;
+    }
+
+    const state = await this.getOrCreateLudoState(roomCode, client);
+
+    if (!state) {
+      return;
+    }
+
+    client.emit('ludo:state', state);
+  }
+
+  @SubscribeMessage('ludo:roll')
+  async handleLudoRoll(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: LudoRollPayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+    const requestedTokenIndex =
+      typeof payload?.tokenIndex === 'number' &&
+      Number.isInteger(payload.tokenIndex)
+        ? payload.tokenIndex
+        : null;
+
+    if (!roomCode || !playerName) {
+      return;
+    }
+
+    const state = await this.getOrCreateLudoState(roomCode, client);
+
+    if (!state) {
+      return;
+    }
+
+    if (state.status === 'finished') {
+      client.emit('ludo:error', {
+        roomCode,
+        message: `Game already finished. Winner: ${state.winner ?? 'unknown'}.`,
+      });
+      client.emit('ludo:state', state);
+      return;
+    }
+
+    const currentPlayer = state.playerOrder[state.currentTurnIndex];
+    const currentPlayerIndex = state.playerOrder.indexOf(currentPlayer);
+
+    if (currentPlayer !== playerName) {
+      this.pendingLudoChoices.delete(roomCode);
+      client.emit('ludo:error', {
+        roomCode,
+        message: `It is ${currentPlayer}'s turn.`,
+      });
+      return;
+    }
+
+    const tokenProgress = state.tokenProgress[playerName] ?? [];
+    const pendingChoice = this.pendingLudoChoices.get(roomCode);
+
+    let roll = this.rollDice();
+    let movableTokenIndexes = this.getMovableLudoTokenIndexes(
+      tokenProgress,
+      roll,
+    );
+
+    if (pendingChoice?.playerName === playerName) {
+      roll = pendingChoice.roll;
+      movableTokenIndexes = pendingChoice.movableTokenIndexes;
+    }
+
+    if (movableTokenIndexes.length === 0) {
+      this.pendingLudoChoices.delete(roomCode);
+      state.lastMove = {
+        playerName,
+        roll,
+        tokenIndex: -1,
+        from: 0,
+        to: 0,
+        kind: 'blocked',
+        capturedPlayers: [],
+      };
+
+      state.currentTurnIndex =
+        (state.currentTurnIndex + 1) % state.playerOrder.length;
+
+      await this.saveLudoState(state);
+      this.server?.to(roomCode).emit('ludo:state', state);
+      return;
+    }
+
+    const requiresChoice = movableTokenIndexes.length > 1;
+
+    if (requiresChoice) {
+      const tokenIndexIsValidChoice =
+        requestedTokenIndex !== null &&
+        movableTokenIndexes.includes(requestedTokenIndex);
+
+      if (!tokenIndexIsValidChoice) {
+        this.pendingLudoChoices.set(roomCode, {
+          playerName,
+          roll,
+          movableTokenIndexes,
+        });
+
+        client.emit('ludo:choice-required', {
+          roomCode,
+          playerName,
+          roll,
+          movableTokenIndexes,
+        } satisfies LudoChoiceRequiredPayload);
+        return;
+      }
+    }
+
+    this.pendingLudoChoices.delete(roomCode);
+
+    const tokenIndex =
+      requestedTokenIndex !== null &&
+      movableTokenIndexes.includes(requestedTokenIndex)
+        ? requestedTokenIndex
+        : this.chooseLudoTokenIndex(tokenProgress, roll);
+
+    if (tokenIndex === -1) {
+      state.lastMove = {
+        playerName,
+        roll,
+        tokenIndex: -1,
+        from: 0,
+        to: 0,
+        kind: 'blocked',
+        capturedPlayers: [],
+      };
+
+      state.currentTurnIndex =
+        (state.currentTurnIndex + 1) % state.playerOrder.length;
+
+      await this.saveLudoState(state);
+      this.server?.to(roomCode).emit('ludo:state', state);
+      return;
+    }
+
+    const from = tokenProgress[tokenIndex] ?? 0;
+    const to = from === 0 ? 1 : from + roll;
+    const landingProgress = Math.min(to, LUDO_MAX_PROGRESS);
+    const landingTrackIndex =
+      landingProgress <= LUDO_HOME_ENTRY_PROGRESS
+        ? this.getLudoTrackIndex(
+            state.playerOrder.length,
+            currentPlayerIndex,
+            landingProgress,
+          )
+        : -1;
+    const capturedPlayers = this.captureLudoTokens(
+      state,
+      playerName,
+      currentPlayerIndex,
+      landingTrackIndex,
+    );
+
+    state.tokenProgress[playerName][tokenIndex] = landingProgress;
+
+    const tokenReachedEnd =
+      landingProgress === LUDO_MAX_PROGRESS && from < LUDO_MAX_PROGRESS;
+    const isWinningMove = this.isLudoWinner(state, playerName);
+
+    state.lastMove = {
+      playerName,
+      roll,
+      tokenIndex,
+      from,
+      to: landingProgress,
+      kind: tokenReachedEnd
+        ? 'finished'
+        : capturedPlayers.length > 0
+          ? 'capture'
+          : 'move',
+      capturedPlayers,
+    };
+
+    if (isWinningMove) {
+      state.status = 'finished';
+      state.winner = playerName;
+    } else if (roll !== 6 && !tokenReachedEnd) {
+      state.currentTurnIndex =
+        (state.currentTurnIndex + 1) % state.playerOrder.length;
+    }
+
+    await this.saveLudoState(state);
+    this.server?.to(roomCode).emit('ludo:state', state);
+  }
+
+  private getMovableLudoTokenIndexes(tokenProgress: number[], roll: number) {
+    const movableIndexes: number[] = [];
+
+    for (let index = 0; index < tokenProgress.length; index += 1) {
+      const progress = tokenProgress[index] ?? 0;
+      const canMove =
+        progress === 0 ? roll === 6 : progress + roll <= LUDO_MAX_PROGRESS;
+
+      if (canMove) {
+        movableIndexes.push(index);
+      }
+    }
+
+    return movableIndexes;
+  }
+
+  private async getOrCreateLudoState(roomCode: string, client?: Socket) {
+    const existingState = await this.loadLudoState(roomCode);
+
+    if (existingState) {
+      return existingState;
+    }
+
+    const room = await this.roomsService.findOne(roomCode).catch(() => null);
+
+    if (!room) {
+      client?.emit('ludo:error', {
+        roomCode,
+        message: 'Room not found.',
+      });
+      return null;
+    }
+
+    if (room.status !== RoomStatus.LIVE) {
+      client?.emit('ludo:error', {
+        roomCode,
+        message: 'Game has not started yet.',
+      });
+      return null;
+    }
+
+    if (room.game.trim().toLowerCase() !== 'ludo') {
+      client?.emit('ludo:error', {
+        roomCode,
+        message: 'This room is not a Ludo game.',
+      });
+      return null;
+    }
+
+    const playerOrder = room.players
+      .map((player) => player.playerName.trim())
+      .slice(0, 4);
+
+    if (playerOrder.length < 2) {
+      client?.emit('ludo:error', {
+        roomCode,
+        message: 'Need at least two players to play.',
+      });
+      return null;
+    }
+
+    const tokenProgress = playerOrder.reduce<Record<string, number[]>>(
+      (accumulator, playerName) => {
+        accumulator[playerName] = Array.from(
+          { length: LUDO_TOKEN_COUNT },
+          () => 0,
+        );
+        return accumulator;
+      },
+      {},
+    );
+
+    const state: LudoState = {
+      roomCode,
+      playerOrder,
+      tokenProgress,
+      currentTurnIndex: 0,
+      status: 'running',
+      winner: null,
+      lastMove: null,
+    };
+
+    await this.saveLudoState(state);
+    return state;
+  }
+
+  private async loadLudoState(roomCode: string) {
+    const stateEntity = await this.ludoStateRepository.findOne({
+      where: {
+        roomCode,
+      },
+    });
+
+    if (!stateEntity) {
+      return null;
+    }
+
+    return {
+      roomCode: stateEntity.roomCode,
+      playerOrder: stateEntity.playerOrder,
+      tokenProgress: stateEntity.tokenProgress,
+      currentTurnIndex: stateEntity.currentTurnIndex,
+      status: stateEntity.status,
+      winner: stateEntity.winner,
+      lastMove: stateEntity.lastMove,
+    } satisfies LudoState;
+  }
+
+  private async saveLudoState(state: LudoState) {
+    const stateEntity = this.ludoStateRepository.create({
+      roomCode: state.roomCode,
+      playerOrder: state.playerOrder,
+      tokenProgress: state.tokenProgress,
+      currentTurnIndex: state.currentTurnIndex,
+      status: state.status,
+      winner: state.winner,
+      lastMove: state.lastMove,
+    });
+
+    await this.ludoStateRepository.save(stateEntity);
+  }
+
+  private chooseLudoTokenIndex(tokenProgress: number[], roll: number) {
+    let selectedIndex = -1;
+    let selectedProgress = -1;
+
+    for (let index = 0; index < tokenProgress.length; index += 1) {
+      const progress = tokenProgress[index] ?? 0;
+      const canMove =
+        progress === 0 ? roll === 6 : progress + roll <= LUDO_MAX_PROGRESS;
+
+      if (!canMove) {
+        continue;
+      }
+
+      if (progress > selectedProgress) {
+        selectedIndex = index;
+        selectedProgress = progress;
+      }
+    }
+
+    return selectedIndex;
+  }
+
+  private captureLudoTokens(
+    state: LudoState,
+    currentPlayerName: string,
+    currentPlayerIndex: number,
+    landingTrackIndex: number,
+  ) {
+    if (
+      landingTrackIndex < 0 ||
+      LUDO_SAFE_TRACK_INDEXES.has(landingTrackIndex)
+    ) {
+      return [] as string[];
+    }
+
+    const capturedPlayers: string[] = [];
+
+    state.playerOrder.forEach((playerName, playerIndex) => {
+      if (playerName === currentPlayerName) {
+        return;
+      }
+
+      const boardSlotIndex = getLudoBoardSlotIndex(
+        state.playerOrder.length,
+        playerIndex,
+      );
+      const startOffset = LUDO_ENTRY_OFFSETS[boardSlotIndex] ?? 0;
+      const progressValues = state.tokenProgress[playerName] ?? [];
+      let captured = false;
+
+      state.tokenProgress[playerName] = progressValues.map((progress) => {
+        if (progress <= 0 || progress > LUDO_HOME_ENTRY_PROGRESS) {
+          return progress;
+        }
+
+        const tokenTrackIndex =
+          (startOffset + progress - 1) % LUDO_BOARD_TRACK_LENGTH;
+
+        if (tokenTrackIndex !== landingTrackIndex) {
+          return progress;
+        }
+
+        captured = true;
+        return 0;
+      });
+
+      if (captured) {
+        capturedPlayers.push(playerName);
+      }
+    });
+
+    return capturedPlayers;
+  }
+
+  private isLudoWinner(state: LudoState, playerName: string) {
+    return (state.tokenProgress[playerName] ?? []).every(
+      (progress) => progress === LUDO_MAX_PROGRESS,
+    );
+  }
+
+  private getLudoTrackIndex(
+    playerCount: number,
+    playerIndex: number,
+    progress: number,
+  ) {
+    const boardSlotIndex = getLudoBoardSlotIndex(playerCount, playerIndex);
+    const startOffset = LUDO_ENTRY_OFFSETS[boardSlotIndex] ?? 0;
+
+    return (startOffset + progress - 1) % LUDO_BOARD_TRACK_LENGTH;
   }
 
   private rollDice() {
