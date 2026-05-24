@@ -131,7 +131,7 @@ export default function GamePage() {
       return "";
     }
 
-    return `${window.location.origin}/join-game/${roomCode}`;
+    return `${window.location.origin}/#/join-game/${roomCode}`;
   }, [roomCode]);
 
   const isHost =
