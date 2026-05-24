@@ -35,10 +35,38 @@ export type WaitingRoomDetails = Room & {
 
 export type GameOption =
   | "Bingo"
+  | "Chess"
   | "Ludo"
   | "Snakes and Ladders"
   | "Tambola"
   | "Tic Tac Toe";
+
+export type ChessColor = "white" | "black";
+
+export type ChessMove = {
+  playerName: string;
+  from: string;
+  to: string;
+  promotion: string | null;
+  san: string;
+  piece: string;
+  captured: string | null;
+};
+
+export type ChessState = {
+  roomCode: string;
+  playerOrder: string[];
+  colors: Record<string, ChessColor>;
+  fen: string;
+  currentTurnColor: ChessColor;
+  currentTurnPlayer: string | null;
+  legalMovesByFrom: Record<string, string[]>;
+  status: "running" | "finished";
+  winner: string | null;
+  isDraw: boolean;
+  isCheck: boolean;
+  lastMove: ChessMove | null;
+};
 
 export type SnakesAndLaddersMoveKind =
   | "normal"

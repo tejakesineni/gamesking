@@ -9,8 +9,10 @@ import {
 } from '@nestjs/websockets';
 import { forwardRef, Inject, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { Chess } from 'chess.js';
 import { Server, Socket } from 'socket.io';
 import { Repository } from 'typeorm';
+import { ChessStateEntity } from './chess-state.entity';
 import { RoomsService } from './rooms.service';
 import { RoomStatus } from './room.entity';
 import { LudoStateEntity } from './ludo-state.entity';
@@ -127,6 +129,40 @@ type TicTacToeMovePayload = {
   index?: number;
 };
 
+type ChessColor = 'white' | 'black';
+
+type ChessMove = {
+  playerName: string;
+  from: string;
+  to: string;
+  promotion: string | null;
+  san: string;
+  piece: string;
+  captured: string | null;
+};
+
+type ChessState = {
+  roomCode: string;
+  playerOrder: string[];
+  colors: Record<string, ChessColor>;
+  fen: string;
+  currentTurnColor: ChessColor;
+  currentTurnPlayer: string | null;
+  legalMovesByFrom: Record<string, string[]>;
+  status: 'running' | 'finished';
+  winner: string | null;
+  isDraw: boolean;
+  isCheck: boolean;
+  lastMove: ChessMove | null;
+};
+
+type ChessMovePayload = {
+  playerName?: string;
+  from?: string;
+  to?: string;
+  promotion?: string;
+};
+
 const TIC_TAC_TOE_WIN_LINES: Array<[number, number, number]> = [
   [0, 1, 2],
   [3, 4, 5],
@@ -202,6 +238,8 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly ludoStateRepository: Repository<LudoStateEntity>,
     @InjectRepository(TicTacToeStateEntity)
     private readonly ticTacToeStateRepository: Repository<TicTacToeStateEntity>,
+    @InjectRepository(ChessStateEntity)
+    private readonly chessStateRepository: Repository<ChessStateEntity>,
   ) {}
 
   @WebSocketServer()
@@ -477,7 +515,171 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (state) {
         this.server?.to(roomCode).emit('ttt:state', state);
       }
+      return;
     }
+
+    if (game === 'chess') {
+      const existingState = await this.loadChessState(roomCode);
+
+      if (existingState) {
+        this.server?.to(roomCode).emit('chess:state', existingState);
+        return;
+      }
+
+      const state = await this.getOrCreateChessState(roomCode);
+
+      if (state) {
+        this.server?.to(roomCode).emit('chess:state', state);
+      }
+    }
+  }
+
+  @SubscribeMessage('chess:sync')
+  async handleChessSync(@ConnectedSocket() client: Socket) {
+    const roomCode = this.getRoomCode(client);
+
+    if (!roomCode) {
+      return;
+    }
+
+    const state = await this.getOrCreateChessState(roomCode, client);
+
+    if (!state) {
+      return;
+    }
+
+    client.emit('chess:state', state);
+  }
+
+  @SubscribeMessage('chess:move')
+  async handleChessMove(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: ChessMovePayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+    const from =
+      typeof payload?.from === 'string'
+        ? payload.from.trim().toLowerCase()
+        : '';
+    const to =
+      typeof payload?.to === 'string' ? payload.to.trim().toLowerCase() : '';
+    const promotion =
+      typeof payload?.promotion === 'string'
+        ? payload.promotion.trim().toLowerCase()
+        : undefined;
+
+    if (!roomCode || !playerName) {
+      return;
+    }
+
+    const state = await this.getOrCreateChessState(roomCode, client);
+
+    if (!state) {
+      return;
+    }
+
+    if (state.status === 'finished') {
+      client.emit('chess:error', {
+        roomCode,
+        message: `Game already finished. Winner: ${state.winner ?? 'draw'}.`,
+      });
+      client.emit('chess:state', state);
+      return;
+    }
+
+    if (!/^[a-h][1-8]$/.test(from) || !/^[a-h][1-8]$/.test(to)) {
+      client.emit('chess:error', {
+        roomCode,
+        message: 'Invalid move coordinates.',
+      });
+      return;
+    }
+
+    const playerColor = state.colors[playerName];
+
+    if (!playerColor) {
+      client.emit('chess:error', {
+        roomCode,
+        message: 'You are not an active player in this game.',
+      });
+      return;
+    }
+
+    if (playerColor !== state.currentTurnColor) {
+      client.emit('chess:error', {
+        roomCode,
+        message: `It is ${state.currentTurnPlayer ?? state.currentTurnColor}'s turn.`,
+      });
+      return;
+    }
+
+    const chess = new Chess(state.fen);
+
+    const move = chess.move({
+      from,
+      to,
+      promotion:
+        promotion === 'q' ||
+        promotion === 'r' ||
+        promotion === 'b' ||
+        promotion === 'n'
+          ? promotion
+          : undefined,
+    });
+
+    if (!move) {
+      client.emit('chess:error', {
+        roomCode,
+        message: 'Illegal move.',
+      });
+      return;
+    }
+
+    const persistedState = await this.loadChessStateEntity(roomCode);
+
+    if (!persistedState) {
+      client.emit('chess:error', {
+        roomCode,
+        message: 'Game state not found.',
+      });
+      return;
+    }
+
+    persistedState.fen = chess.fen();
+    persistedState.lastMove = {
+      playerName,
+      from: move.from,
+      to: move.to,
+      promotion: move.promotion ?? null,
+      san: move.san,
+      piece: move.piece,
+      captured: move.captured ?? null,
+    };
+
+    if (chess.isCheckmate()) {
+      persistedState.status = 'finished';
+      persistedState.winner = playerName;
+      persistedState.isDraw = false;
+    } else if (
+      chess.isDraw() ||
+      chess.isStalemate() ||
+      chess.isThreefoldRepetition() ||
+      chess.isInsufficientMaterial()
+    ) {
+      persistedState.status = 'finished';
+      persistedState.winner = null;
+      persistedState.isDraw = true;
+    } else {
+      persistedState.status = 'running';
+      persistedState.winner = null;
+      persistedState.isDraw = false;
+    }
+
+    await this.chessStateRepository.save(persistedState);
+    const nextState = this.buildChessStateFromEntity(persistedState);
+    this.server?.to(roomCode).emit('chess:state', nextState);
   }
 
   private async getOrCreateSnakesAndLaddersState(
@@ -789,6 +991,121 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
 
     await this.ticTacToeStateRepository.save(stateEntity);
+  }
+
+  private async getOrCreateChessState(roomCode: string, client?: Socket) {
+    const existingState = await this.loadChessState(roomCode);
+
+    if (existingState) {
+      return existingState;
+    }
+
+    const room = await this.roomsService.findOne(roomCode).catch(() => null);
+
+    if (!room) {
+      client?.emit('chess:error', {
+        roomCode,
+        message: 'Room not found.',
+      });
+      return null;
+    }
+
+    if (room.status !== RoomStatus.LIVE) {
+      client?.emit('chess:error', {
+        roomCode,
+        message: 'Game has not started yet.',
+      });
+      return null;
+    }
+
+    if (room.game.trim().toLowerCase() !== 'chess') {
+      client?.emit('chess:error', {
+        roomCode,
+        message: 'This room is not a Chess game.',
+      });
+      return null;
+    }
+
+    const playerOrder = room.players
+      .map((player) => player.playerName.trim())
+      .slice(0, 2);
+
+    if (playerOrder.length < 2) {
+      client?.emit('chess:error', {
+        roomCode,
+        message: 'Need exactly two players to play.',
+      });
+      return null;
+    }
+
+    const stateEntity = this.chessStateRepository.create({
+      roomCode,
+      playerOrder,
+      colors: {
+        [playerOrder[0]]: 'white',
+        [playerOrder[1]]: 'black',
+      },
+      fen: new Chess().fen(),
+      status: 'running',
+      winner: null,
+      isDraw: false,
+      lastMove: null,
+    });
+
+    await this.chessStateRepository.save(stateEntity);
+    return this.buildChessStateFromEntity(stateEntity);
+  }
+
+  private async loadChessStateEntity(roomCode: string) {
+    return this.chessStateRepository.findOne({
+      where: {
+        roomCode,
+      },
+    });
+  }
+
+  private async loadChessState(roomCode: string) {
+    const stateEntity = await this.loadChessStateEntity(roomCode);
+
+    if (!stateEntity) {
+      return null;
+    }
+
+    return this.buildChessStateFromEntity(stateEntity);
+  }
+
+  private buildChessStateFromEntity(stateEntity: ChessStateEntity) {
+    const chess = new Chess(stateEntity.fen);
+    const currentTurnColor: ChessColor =
+      chess.turn() === 'w' ? 'white' : 'black';
+    const currentTurnPlayer =
+      Object.entries(stateEntity.colors).find(
+        ([, color]) => color === currentTurnColor,
+      )?.[0] ?? null;
+
+    const legalMovesByFrom = chess
+      .moves({ verbose: true })
+      .reduce<Record<string, string[]>>((accumulator, move) => {
+        const from = move.from;
+        accumulator[from] = accumulator[from] ?? [];
+        accumulator[from].push(move.to);
+        return accumulator;
+      }, {});
+
+    return {
+      roomCode: stateEntity.roomCode,
+      playerOrder: stateEntity.playerOrder,
+      colors: stateEntity.colors,
+      fen: stateEntity.fen,
+      currentTurnColor,
+      currentTurnPlayer,
+      legalMovesByFrom,
+      status: stateEntity.status,
+      winner: stateEntity.winner,
+      isDraw: stateEntity.isDraw,
+      isCheck: chess.isCheck(),
+      lastMove: stateEntity.lastMove,
+    } satisfies ChessState;
   }
 
   private isTicTacToeWinner(
