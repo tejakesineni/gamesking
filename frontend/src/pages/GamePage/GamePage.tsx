@@ -12,6 +12,7 @@ import { connectWaitingRoomSocket } from "./GamePage.service";
 import { fetchWaitingRoom } from "./GamePage.service";
 import SnakesAndLaddersGame from "./SnakesAndLaddersGame";
 import LudoGame from "./LudoGame";
+import TicTacToeGame from "./TicTacToeGame";
 import type {
   RoomStatus,
   RoomUser,
@@ -395,10 +396,14 @@ export default function GamePage() {
 
     if (gameKey === "tic tac toe") {
       return (
-        <section className={styles.liveGameSurface}>
-          <h2>Tic Tac Toe Live</h2>
-          <p>Take turns and make a line of three before your opponent does.</p>
-        </section>
+        <TicTacToeGame
+          roomCode={roomCode}
+          socket={liveSocket}
+          players={roomDetails?.players ?? []}
+          localPlayerName={localPlayerName}
+          isSocketConnected={isSocketConnected}
+          onlinePlayerNames={onlinePlayerNames}
+        />
       );
     }
 

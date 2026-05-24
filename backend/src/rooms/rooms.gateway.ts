@@ -15,6 +15,7 @@ import { RoomsService } from './rooms.service';
 import { RoomStatus } from './room.entity';
 import { LudoStateEntity } from './ludo-state.entity';
 import { SnakesAndLaddersStateEntity } from './snl-state.entity';
+import { TicTacToeStateEntity } from './ttt-state.entity';
 
 type RoomCreatedPayload = {
   roomCode: string;
@@ -101,6 +102,42 @@ type LudoChoiceRequiredPayload = {
   movableTokenIndexes: number[];
 };
 
+type TicTacToeMark = 'X' | 'O';
+
+type TicTacToeMove = {
+  playerName: string;
+  mark: TicTacToeMark;
+  index: number;
+};
+
+type TicTacToeState = {
+  roomCode: string;
+  playerOrder: string[];
+  marks: Record<string, TicTacToeMark>;
+  board: Array<'' | TicTacToeMark>;
+  currentTurnIndex: number;
+  status: 'running' | 'finished';
+  winner: string | null;
+  isDraw: boolean;
+  lastMove: TicTacToeMove | null;
+};
+
+type TicTacToeMovePayload = {
+  playerName?: string;
+  index?: number;
+};
+
+const TIC_TAC_TOE_WIN_LINES: Array<[number, number, number]> = [
+  [0, 1, 2],
+  [3, 4, 5],
+  [6, 7, 8],
+  [0, 3, 6],
+  [1, 4, 7],
+  [2, 5, 8],
+  [0, 4, 8],
+  [2, 4, 6],
+];
+
 // This mapping is aligned to frontend/src/assets/sandl.jpg board artwork.
 const SNAKES_AND_LADDERS_JUMPS: Record<number, number> = {
   // Ladders
@@ -163,6 +200,8 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly snakesAndLaddersStateRepository: Repository<SnakesAndLaddersStateEntity>,
     @InjectRepository(LudoStateEntity)
     private readonly ludoStateRepository: Repository<LudoStateEntity>,
+    @InjectRepository(TicTacToeStateEntity)
+    private readonly ticTacToeStateRepository: Repository<TicTacToeStateEntity>,
   ) {}
 
   @WebSocketServer()
@@ -422,6 +461,22 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (state) {
         this.server?.to(roomCode).emit('ludo:state', state);
       }
+      return;
+    }
+
+    if (game === 'tic tac toe') {
+      const existingState = await this.loadTicTacToeState(roomCode);
+
+      if (existingState) {
+        this.server?.to(roomCode).emit('ttt:state', existingState);
+        return;
+      }
+
+      const state = await this.getOrCreateTicTacToeState(roomCode);
+
+      if (state) {
+        this.server?.to(roomCode).emit('ttt:state', state);
+      }
     }
   }
 
@@ -527,6 +582,223 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
 
     await this.snakesAndLaddersStateRepository.save(stateEntity);
+  }
+
+  @SubscribeMessage('ttt:sync')
+  async handleTicTacToeSync(@ConnectedSocket() client: Socket) {
+    const roomCode = this.getRoomCode(client);
+
+    if (!roomCode) {
+      return;
+    }
+
+    const state = await this.getOrCreateTicTacToeState(roomCode, client);
+
+    if (!state) {
+      return;
+    }
+
+    client.emit('ttt:state', state);
+  }
+
+  @SubscribeMessage('ttt:move')
+  async handleTicTacToeMove(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: TicTacToeMovePayload,
+  ) {
+    const roomCode = this.getRoomCode(client);
+    const playerName =
+      typeof payload?.playerName === 'string' ? payload.playerName.trim() : '';
+    const index =
+      typeof payload?.index === 'number' && Number.isInteger(payload.index)
+        ? payload.index
+        : -1;
+
+    if (!roomCode || !playerName) {
+      return;
+    }
+
+    const state = await this.getOrCreateTicTacToeState(roomCode, client);
+
+    if (!state) {
+      return;
+    }
+
+    if (state.status === 'finished') {
+      client.emit('ttt:error', {
+        roomCode,
+        message: `Game already finished. Winner: ${state.winner ?? 'draw'}.`,
+      });
+      client.emit('ttt:state', state);
+      return;
+    }
+
+    const currentPlayer = state.playerOrder[state.currentTurnIndex];
+
+    if (currentPlayer !== playerName) {
+      client.emit('ttt:error', {
+        roomCode,
+        message: `It is ${currentPlayer}'s turn.`,
+      });
+      return;
+    }
+
+    if (index < 0 || index > 8) {
+      client.emit('ttt:error', {
+        roomCode,
+        message: 'Choose a valid cell.',
+      });
+      return;
+    }
+
+    if (state.board[index] !== '') {
+      client.emit('ttt:error', {
+        roomCode,
+        message: 'Cell already occupied.',
+      });
+      return;
+    }
+
+    const mark = state.marks[playerName] ?? 'X';
+
+    state.board[index] = mark;
+    state.lastMove = {
+      playerName,
+      mark,
+      index,
+    };
+
+    if (this.isTicTacToeWinner(state.board, mark)) {
+      state.status = 'finished';
+      state.winner = playerName;
+      state.isDraw = false;
+    } else if (state.board.every((cell) => cell !== '')) {
+      state.status = 'finished';
+      state.winner = null;
+      state.isDraw = true;
+    } else {
+      state.currentTurnIndex =
+        (state.currentTurnIndex + 1) % state.playerOrder.length;
+    }
+
+    await this.saveTicTacToeState(state);
+    this.server?.to(roomCode).emit('ttt:state', state);
+  }
+
+  private async getOrCreateTicTacToeState(roomCode: string, client?: Socket) {
+    const existingState = await this.loadTicTacToeState(roomCode);
+
+    if (existingState) {
+      return existingState;
+    }
+
+    const room = await this.roomsService.findOne(roomCode).catch(() => null);
+
+    if (!room) {
+      client?.emit('ttt:error', {
+        roomCode,
+        message: 'Room not found.',
+      });
+      return null;
+    }
+
+    if (room.status !== RoomStatus.LIVE) {
+      client?.emit('ttt:error', {
+        roomCode,
+        message: 'Game has not started yet.',
+      });
+      return null;
+    }
+
+    if (room.game.trim().toLowerCase() !== 'tic tac toe') {
+      client?.emit('ttt:error', {
+        roomCode,
+        message: 'This room is not a Tic Tac Toe game.',
+      });
+      return null;
+    }
+
+    const playerOrder = room.players
+      .map((player) => player.playerName.trim())
+      .slice(0, 2);
+
+    if (playerOrder.length < 2) {
+      client?.emit('ttt:error', {
+        roomCode,
+        message: 'Need exactly two players to play.',
+      });
+      return null;
+    }
+
+    const marks: Record<string, TicTacToeMark> = {
+      [playerOrder[0]]: 'X',
+      [playerOrder[1]]: 'O',
+    };
+
+    const state: TicTacToeState = {
+      roomCode,
+      playerOrder,
+      marks,
+      board: Array.from({ length: 9 }, () => ''),
+      currentTurnIndex: 0,
+      status: 'running',
+      winner: null,
+      isDraw: false,
+      lastMove: null,
+    };
+
+    await this.saveTicTacToeState(state);
+    return state;
+  }
+
+  private async loadTicTacToeState(roomCode: string) {
+    const stateEntity = await this.ticTacToeStateRepository.findOne({
+      where: {
+        roomCode,
+      },
+    });
+
+    if (!stateEntity) {
+      return null;
+    }
+
+    return {
+      roomCode: stateEntity.roomCode,
+      playerOrder: stateEntity.playerOrder,
+      marks: stateEntity.marks,
+      board: stateEntity.board,
+      currentTurnIndex: stateEntity.currentTurnIndex,
+      status: stateEntity.status,
+      winner: stateEntity.winner,
+      isDraw: stateEntity.isDraw,
+      lastMove: stateEntity.lastMove,
+    } satisfies TicTacToeState;
+  }
+
+  private async saveTicTacToeState(state: TicTacToeState) {
+    const stateEntity = this.ticTacToeStateRepository.create({
+      roomCode: state.roomCode,
+      playerOrder: state.playerOrder,
+      marks: state.marks,
+      board: state.board,
+      currentTurnIndex: state.currentTurnIndex,
+      status: state.status,
+      winner: state.winner,
+      isDraw: state.isDraw,
+      lastMove: state.lastMove,
+    });
+
+    await this.ticTacToeStateRepository.save(stateEntity);
+  }
+
+  private isTicTacToeWinner(
+    board: Array<'' | TicTacToeMark>,
+    mark: TicTacToeMark,
+  ) {
+    return TIC_TAC_TOE_WIN_LINES.some(
+      ([a, b, c]) =>
+        board[a] === mark && board[b] === mark && board[c] === mark,
+    );
   }
 
   @SubscribeMessage('ludo:sync')

@@ -7,6 +7,7 @@ import { RoomsGateway } from './rooms.gateway';
 import { RoomsController } from './rooms.controller';
 import { RoomsService } from './rooms.service';
 import { SnakesAndLaddersStateEntity } from './snl-state.entity';
+import { TicTacToeStateEntity } from './ttt-state.entity';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { SnakesAndLaddersStateEntity } from './snl-state.entity';
       RoomUser,
       SnakesAndLaddersStateEntity,
       LudoStateEntity,
+      TicTacToeStateEntity,
     ]),
   ],
   controllers: [RoomsController],

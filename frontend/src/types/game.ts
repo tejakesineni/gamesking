@@ -85,3 +85,25 @@ export type LudoState = {
   winner: string | null;
   lastMove: LudoMove | null;
 };
+
+export type TicTacToeMark = "X" | "O";
+
+export type TicTacToeCell = "" | TicTacToeMark;
+
+export type TicTacToeMove = {
+  playerName: string;
+  mark: TicTacToeMark;
+  index: number;
+};
+
+export type TicTacToeState = {
+  roomCode: string;
+  playerOrder: string[];
+  marks: Record<string, TicTacToeMark>;
+  board: TicTacToeCell[];
+  currentTurnIndex: number;
+  status: "running" | "finished";
+  winner: string | null;
+  isDraw: boolean;
+  lastMove: TicTacToeMove | null;
+};
